@@ -27,6 +27,37 @@ def sequential_model(Q=9, n_hidden_layers=2, n_per_layer=50, activation="relu", 
     return model
 
 
+def resnet_sequential_model(
+    Q=9, n_hidden_layers=2, n_per_layer=50, activation="relu", ll_activation="linear", bias=False
+):
+    """Residual inner network: project → residual blocks → project back.
+
+    Each residual block is a two-layer bottleneck:
+        x_new = W₂(activation(W₁·x)) + x
+    The second Dense (W₂) has no activation, so its output can be any sign.
+    This lets the skip connection genuinely correct in either direction —
+    unlike a single-layer relu block where relu(W·x) ≥ 0 forces the hidden
+    state to only grow, crippling the network's expressiveness.
+    """
+    inp = keras.Input(shape=(Q,))
+
+    # Project input to hidden dimension
+    x = Dense(n_per_layer, activation=activation, use_bias=bias, kernel_initializer="he_uniform")(inp)
+
+    # Two-layer residual blocks: activate → linear projection → add skip
+    for _ in range(n_hidden_layers):
+        residual = x
+        x = Dense(n_per_layer, activation=activation, use_bias=bias, kernel_initializer="he_uniform")(x)
+        # No activation here: output can be negative, so skip can correct either way
+        x = Dense(n_per_layer, activation=None, use_bias=bias, kernel_initializer="he_uniform")(x)
+        x = layers.Add()([x, residual])
+
+    # Project back to Q populations
+    out = Dense(Q, activation=ll_activation, use_bias=bias, kernel_initializer="he_uniform")(x)
+
+    return keras.Model(inputs=inp, outputs=out)
+
+
 # ---------------------------------------------------------------------------
 # D4-equivariant wrappers
 # ---------------------------------------------------------------------------
@@ -72,10 +103,31 @@ def create_model(
     return _wrap_d4(sequential_model, loss, optimizer, Q, n_hidden_layers, n_per_layer, activation, ll_activation, bias)
 
 
+def create_resnet_model(
+    loss: str | Callable = "mape",
+    optimizer: str = "adam",
+    Q: int = 9,
+    n_hidden_layers: int = 2,
+    n_per_layer: int = 50,
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    bias: bool = False,
+) -> keras.Model:
+    """D4-equivariant network with a residual inner sub-network.
+
+    Identical equivariant wrapper as create_model; the inner sub-network uses
+    skip connections (ResNet-style) instead of a plain sequential stack.
+    """
+    return _wrap_d4(
+        resnet_sequential_model, loss, optimizer, Q, n_hidden_layers, n_per_layer, activation, ll_activation, bias
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model registry — maps name → factory function
 # ---------------------------------------------------------------------------
 
 MODEL_REGISTRY: dict[str, Callable] = {
     "d4equivariant": create_model,
+    "resnet": create_resnet_model,
 }
