@@ -316,6 +316,10 @@ def main(params):
         feq   = equilibrium(rho, ux, uy)
         f_out = f - (f - feq) / tau
 
+        # -- 5b-extra. Save f_pre and f_post for NN evaluation --
+        if save_every > 0 and step % save_every == 0:
+            np.save(os.path.join(out_dir, f"fpre_{step:06d}.npy"), f)
+            np.save(os.path.join(out_dir, f"fpost_{step:06d}.npy"), f_out)
         # -- 5c.  Force computation & bounce-back on obstacle --
         #
         # Momentum-exchange method:  the force on the solid equals the
