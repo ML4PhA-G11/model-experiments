@@ -61,22 +61,42 @@ def _model_paths(model_name: str) -> dict[str, Path]:
 def generate(n_samples: int = 100_000) -> None:
     """Generate BGK collision pairs and save to DATASET_PATH."""
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Generating {n_samples} training samples …")
+    print(f"Generating {n_samples} training samples ...")
     generate_dataset(
         DATASET_PATH,
         n_samples=n_samples,
         u_abs_min=1e-15, u_abs_max=0.01,
         sigma_min=1e-15, sigma_max=5e-4,
     )
-    print(f"  Saved → {DATASET_PATH}")
+    print(f"  Saved -> {DATASET_PATH}")
 
 
 # ---------------------------------------------------------------------------
 # 2. Training
 # ---------------------------------------------------------------------------
 
-def train(model_name: str = MODEL_NAME,
-          batch_size: int = 32, n_epochs: int = 200, patience: int = 50) -> keras.Model:
+def _start_tensorboard(log_dir: Path, port: int = 6006) -> None:
+    tb = Path(sys.executable).parent / "tensorboard"
+    try:
+        proc = subprocess.Popen(
+            [str(tb), "--logdir", str(log_dir), "--port", str(port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        atexit.register(proc.terminate)
+        print(f"  TensorBoard   -> http://localhost:{port}")
+    except FileNotFoundError:
+        print(f"  TensorBoard not found; run manually: tensorboard --logdir {log_dir} --port {port}")
+
+
+def train(
+    model_name: str = MODEL_NAME,
+    batch_size: int = 32,
+    n_epochs: int = 200,
+    patience: int = 50,
+    tensorboard: bool = False,
+    run_name: str | None = None,
+) -> keras.Model:
     """Load the dataset, train the selected network, and save the best model."""
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model '{model_name}'. Choose from: {list(MODEL_REGISTRY)}")
@@ -96,12 +116,17 @@ def train(model_name: str = MODEL_NAME,
     )
 
     print(f"Training model: {model_name}")
+    if tensorboard:
+        _start_tensorboard(paths["tb_log"])
     model = MODEL_REGISTRY[model_name](loss=rmsre, ll_activation="softmax")
 
+    tb_run_name = run_name or datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tb_run_dir = paths["tb_log"] / tb_run_name
     callbacks = [
+        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=patience // 3, min_lr=1e-7, verbose=1),
         EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, verbose=1),
         ModelCheckpoint(filepath=str(paths["weights"]), monitor="val_loss", save_best_only=True),
-        TensorBoard(log_dir=str(paths["tb_log"]), histogram_freq=1),
+        TensorBoard(log_dir=str(tb_run_dir), histogram_freq=1),
     ]
 
     hist = model.fit(
@@ -124,7 +149,7 @@ def train(model_name: str = MODEL_NAME,
     plt.legend(loc='best', frameon=False)
     plt.savefig(paths["loss_plot"], dpi=120, bbox_inches="tight")
     plt.close()
-    print(f"  Loss plot  → {paths['loss_plot']}")
+    print(f"  Loss plot  -> {paths['loss_plot']}")
 
     return model
 
@@ -241,7 +266,7 @@ def _plot_results(dumpfile, niter, dumpit, nx, ny, tau, cs2, decay_plot, fields_
     ax.tick_params(which="both", direction="in", top="on", right="on", labelsize=14)
     fig.savefig(decay_plot, dpi=120, bbox_inches="tight")
     plt.close(fig)
-    print(f"  Decay plot → {decay_plot}")
+    print(f"  Decay plot -> {decay_plot}")
 
     # Velocity field snapshots
     X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
@@ -258,7 +283,7 @@ def _plot_results(dumpfile, niter, dumpit, nx, ny, tau, cs2, decay_plot, fields_
         field_path = fields_dir / f"velocity_field_t{int(t):05d}.png"
         fig.savefig(field_path, dpi=120, bbox_inches="tight")
         plt.close(fig)
-        print(f"  Field plot → {field_path}")
+        print(f"  Field plot -> {field_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +307,10 @@ def _parse_args():
                    help="Skip training (load existing saved model)")
     p.add_argument("--skip-simulate", action="store_true",
                    help="Skip simulation")
+    p.add_argument("--tensorboard", action="store_true",
+                   help="Open TensorBoard in browser during training (logs always saved)")
+    p.add_argument("--run-name", default=None,
+                   help="Name for the TensorBoard log subdirectory (default: timestamp)")
     return p.parse_args()
 
 
@@ -292,6 +321,7 @@ if __name__ == "__main__":
         generate()
     if not args.skip_train:
         train(model_name=args.model, batch_size=args.batch_size,
-              n_epochs=args.n_epochs, patience=args.patience)
+              n_epochs=args.n_epochs, patience=args.patience,
+              tensorboard=args.tensorboard, run_name=args.run_name)
     if not args.skip_simulate:
         simulate(model_name=args.model)
