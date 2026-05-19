@@ -35,23 +35,40 @@ MODEL_NAME: str = "d4equivariant"  # "d4equivariant" | "resnet"
 
 
 # ---------------------------------------------------------------------------
-# Artifact paths  (namespaced by model so runs don't overwrite each other)
+# Artifact paths
 # ---------------------------------------------------------------------------
-ARTIFACTS_DIR   = Path(__file__).resolve().parent / "artifacts-run-all-tensorflow"
-DATASET_PATH    = ARTIFACTS_DIR / "example_dataset.npz"
+ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts-run-all-tensorflow"
+DATASET_PATH  = ARTIFACTS_DIR / "example_dataset.npz"
 
-def _model_paths(model_name: str) -> dict[str, Path]:
-    d = ARTIFACTS_DIR / model_name
+
+def _make_run_dir(model_name: str, run_name: str | None, timestamp: str) -> Path:
+    """Create and return artifacts-run-all-tensorflow/<model>[_<name>]_<timestamp>/."""
+    stem = f"{model_name}_{run_name}_{timestamp}" if run_name else f"{model_name}_{timestamp}"
+    d = ARTIFACTS_DIR / stem
     d.mkdir(parents=True, exist_ok=True)
     (d / "velocity_fields").mkdir(exist_ok=True)
+    return d
+
+
+def _run_paths(run_dir: Path) -> dict[str, Path]:
     return {
-        "weights":      d / "weights.keras",
-        "model":        d / "model.keras",
-        "loss_plot":    d / "training_loss.png",
-        "tb_log":       d / "tensorboard_logs",
-        "decay_plot":   d / "velocity_decay.png",
-        "fields_dir":   d / "velocity_fields",
+        "weights":    run_dir / "weights.keras",
+        "model":      run_dir / "model.keras",
+        "loss_plot":  run_dir / "training_loss.png",
+        "tb_log":     run_dir / "tensorboard_logs",
+        "decay_plot": run_dir / "velocity_decay.png",
+        "fields_dir": run_dir / "velocity_fields",
     }
+
+
+def _latest_run_dir(model_name: str) -> Path:
+    """Return the most-recently modified run directory for a given model."""
+    matches = sorted(ARTIFACTS_DIR.glob(f"{model_name}_*"), key=lambda p: p.stat().st_mtime)
+    if not matches:
+        raise FileNotFoundError(
+            f"No runs found for model '{model_name}' in {ARTIFACTS_DIR}"
+        )
+    return matches[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +111,20 @@ def train(
     batch_size: int = 32,
     n_epochs: int = 200,
     patience: int = 50,
+    learning_rate: float = 1e-3,
     tensorboard: bool = False,
     run_name: str | None = None,
 ) -> keras.Model:
-    """Load the dataset, train the selected network, and save the best model."""
+    """Load the dataset, train the selected network, and save artifacts under a timestamped run dir."""
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model '{model_name}'. Choose from: {list(MODEL_REGISTRY)}")
 
-    paths = _model_paths(model_name)
     K.set_floatx('float64')
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = _make_run_dir(model_name, run_name, timestamp)
+    paths = _run_paths(run_dir)
+    print(f"Run dir: {run_dir}")
 
     feq, fpre, fpost = load_data(DATASET_PATH)
 
@@ -118,15 +140,17 @@ def train(
     print(f"Training model: {model_name}")
     if tensorboard:
         _start_tensorboard(paths["tb_log"])
-    model = MODEL_REGISTRY[model_name](loss=rmsre, ll_activation="softmax")
+    model = MODEL_REGISTRY[model_name](
+        loss=rmsre,
+        optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+        ll_activation="softmax",
+    )
 
-    tb_run_name = run_name or datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    tb_run_dir = paths["tb_log"] / tb_run_name
     callbacks = [
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=patience // 3, min_lr=1e-7, verbose=1),
         EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, verbose=1),
         ModelCheckpoint(filepath=str(paths["weights"]), monitor="val_loss", save_best_only=True),
-        TensorBoard(log_dir=str(tb_run_dir), histogram_freq=1),
+        TensorBoard(log_dir=str(paths["tb_log"]), histogram_freq=1),
     ]
 
     hist = model.fit(
@@ -165,6 +189,7 @@ def _analytic_decay(t, L, F0, nu):
 
 def simulate(
     model_name: str = MODEL_NAME,
+    run_dir: Path | None = None,
     nx: int = 32,
     ny: int = 32,
     niter: int = 1000,
@@ -172,8 +197,14 @@ def simulate(
     tau: float = 1.0,
     u0: float = 0.01,
 ) -> None:
-    """Run the Taylor-Green decay simulation using the trained ML collision operator."""
-    paths = _model_paths(model_name)
+    """Run the Taylor-Green decay simulation using the trained ML collision operator.
+
+    If run_dir is None, the most recently modified run for model_name is used.
+    """
+    if run_dir is None:
+        run_dir = _latest_run_dir(model_name)
+        print(f"Simulating from latest run: {run_dir.name}")
+    paths = _run_paths(run_dir)
     K.set_floatx('float64')
 
     Q = 9
@@ -301,6 +332,8 @@ def _parse_args():
                    help="EarlyStopping patience (epochs without val_loss improvement)")
     p.add_argument("--batch-size", type=int, default=32,
                    help="Training batch size")
+    p.add_argument("--learning-rate", type=float, default=1e-3,
+                   help="Initial Adam learning rate (default: 1e-3)")
     p.add_argument("--skip-generate", action="store_true",
                    help="Skip dataset generation (reuse existing file)")
     p.add_argument("--skip-train", action="store_true",
@@ -310,7 +343,9 @@ def _parse_args():
     p.add_argument("--tensorboard", action="store_true",
                    help="Open TensorBoard in browser during training (logs always saved)")
     p.add_argument("--run-name", default=None,
-                   help="Name for the TensorBoard log subdirectory (default: timestamp)")
+                   help="Optional label added to the run directory name (default: timestamp only)")
+    p.add_argument("--run-dir", default=None,
+                   help="Explicit run directory to simulate from (default: latest run for --model)")
     return p.parse_args()
 
 
@@ -322,6 +357,8 @@ if __name__ == "__main__":
     if not args.skip_train:
         train(model_name=args.model, batch_size=args.batch_size,
               n_epochs=args.n_epochs, patience=args.patience,
+              learning_rate=args.learning_rate,
               tensorboard=args.tensorboard, run_name=args.run_name)
     if not args.skip_simulate:
-        simulate(model_name=args.model)
+        run_dir = Path(args.run_dir) if args.run_dir else None
+        simulate(model_name=args.model, run_dir=run_dir)
