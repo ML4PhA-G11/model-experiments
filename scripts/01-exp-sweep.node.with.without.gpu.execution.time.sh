@@ -7,10 +7,14 @@
 #      includes tensorflow[and-cuda]) before any GPU job starts, instead of
 #      each job racing to install CUDA extras.
 #   2. sbatch-submits 4 jobs with overrides on top of jobs/run-all-tensorflow.sh:
-#        cpu_rome   rome     gpus=0  cpus=16
-#        gpu_mig    gpu_mig  gpus=1  cpus=9
-#        gpu_a100   gpu_a100 gpus=1  cpus=18
-#        gpu_h100   gpu_h100 gpus=1  cpus=16
+#        cpu_rome      rome     gpus=0  cpus=16
+#        gpu_mig       gpu_mig  gpus=1  cpus=9   (A100 MIG, a100_3g.20gb)
+#        gpu_a100      gpu_a100 gpus=1  cpus=18
+#        gpu_h100      gpu_h100 gpus=1  cpus=16
+#      A 5th row, gpu_mig_h100 (H100 MIG, h100_3g.40gb), is present but
+#      DISABLED: Snellius exposes no H100 MIG (checked 2026-05-20 — the only
+#      MIG gres cluster-wide is a100_3g.20gb; gpu_h100 is full-GPU only).
+#      It is left ready to re-enable should an H100 MIG profile ever appear.
 #   3. Waits for all four to finish (poll squeue every 30s).
 #   4. Parses each .out log for the `[job] Total wall time: ...` line, the
 #      `[gpu] gpu_used=...` marker (to verify GPU jobs really used the GPU),
@@ -91,10 +95,15 @@ fi
 ############################################
 # label  partition  gpus  cpus
 CONFIGS=(
-    "cpu_rome rome     0  16"
-    "gpu_mig  gpu_mig  1  9"
-    "gpu_a100 gpu_a100 1  18"
-    "gpu_h100 gpu_h100 1  16"
+    "cpu_rome     rome     0  16"
+    "gpu_mig      gpu_mig  1  9"
+    # DISABLED — no H100 MIG on Snellius (checked 2026-05-20; only
+    # a100_3g.20gb exists). Uncomment to re-enable if h100_3g.40gb ever
+    # appears on the gpu_mig partition; the gres string is in the
+    # gpu_mig_h100 case branch below.
+    #"gpu_mig_h100 gpu_mig  1  9"
+    "gpu_a100     gpu_a100 1  18"
+    "gpu_h100     gpu_h100 1  16"
 )
 
 if [[ $SUBMIT -eq 1 ]]; then
@@ -104,22 +113,29 @@ if [[ $SUBMIT -eq 1 ]]; then
         read -r LABEL PART GPUS CPUS <<<"$cfg"
         NAME="lbm-tf-${LABEL}"
 
-        # Per-partition tweaks to improve scheduling. For gpu_mig we ask
-        # for the exact MIG profile Snellius exposes (a100_3g.20gb, 32
-        # slices across gcn[2-5]) and a 45-min walltime so the job is
-        # eligible for backfill.
-        # Per-partition tweaks. For gpu_mig we pin the exact MIG profile
-        # Snellius exposes (a100_3g.20gb, 32 slices total across gcn[2-5])
-        # so the scheduler matches us against any of them, and we request
-        # 45 min instead of 1 h so the job is eligible for backfill into
-        # gaps between longer jobs.
+        # Per-MIG-profile tweaks. The gpu_mig partition is typed: we must pin
+        # the exact MIG profile so the scheduler matches us against the right
+        # slices, and we request 45 min instead of 1 h so the job is eligible
+        # for backfill into gaps between longer jobs. Both MIG labels share
+        # the gpu_mig partition but differ in profile:
+        #   gpu_mig       -> a100_3g.20gb  (A100, 3/7 slice)
+        #   gpu_mig_h100  -> h100_3g.40gb  (H100, 3/7 slice, parity)
+        # Matched on $LABEL (not $PART) precisely because both live on gpu_mig.
         TIME_ARG="--time=01:00:00"
-        case "$PART" in
+        case "$LABEL" in
             gpu_mig)
                 # Typed --gpus form cleanly overrides the default --gpus=1
                 # in jobs/run-all-tensorflow.sh; --gres would conflict with
                 # it ("with and without type identification" sbatch error).
                 GPU_FLAG=(--gpus="a100_3g.20gb:${GPUS}")
+                TIME_ARG="--time=00:45:00"
+                ;;
+            gpu_mig_h100)
+                # Reachable only if the gpu_mig_h100 CONFIGS row is
+                # re-enabled. h100_3g.40gb does NOT exist on Snellius today
+                # (checked 2026-05-20) — verify the exact profile name with
+                # `sinfo -p gpu_mig -N -o '%N %G'` before relying on it.
+                GPU_FLAG=(--gpus="h100_3g.40gb:${GPUS}")
                 TIME_ARG="--time=00:45:00"
                 ;;
             *)
@@ -309,13 +325,17 @@ fi
 
 # rough SBU rates (per allocated unit per hour):
 #   rome:     1 SBU per core-hour                                 -> 16 cpu ≈ 16/h
-#   gpu_mig:  Snellius slices each A100 into a100_3g.20gb (3/7 of
-#             the GPU). 3/7 × 128 ≈ 55 SBU/h per slice.
-#   gpu_a100: ~128 SBU per A100-hour
-#   gpu_h100: ~192 SBU per H100-hour (newer; check `accinfo`)
+#   gpu_mig:      A100 a100_3g.20gb slice + 9 CPUs. Snellius bills MAX_TRES,
+#                 so max(1×64 gpu, 9×7.111 cpu) = 64 SBU/h (gpu_mig
+#                 TRESBillingWeights: gres/gpu=64, cpu=7.11112).
+#   gpu_mig_h100: DISABLED (no H100 MIG on Snellius). Estimate if ever
+#                 enabled: H100 h100_3g.40gb slice ≈ 3/7 × 192 ≈ 82 SBU/h.
+#   gpu_a100:     ~128 SBU per A100-hour
+#   gpu_h100:     ~192 SBU per H100-hour (newer; check `accinfo`)
 declare -A RATE=(
     [cpu_rome]=16
-    [gpu_mig]=55
+    [gpu_mig]=64
+    [gpu_mig_h100]=82
     [gpu_a100]=128
     [gpu_h100]=192
 )
