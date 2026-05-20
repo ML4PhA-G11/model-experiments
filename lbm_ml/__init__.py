@@ -1,5 +1,3 @@
-# Compatibility shim — re-exports everything the notebooks/old scripts expect.
-# New code should import directly from lbm_ml.* submodules.
 from lbm_ml.lattice.stencil import LB_stencil
 from lbm_ml.lattice.symmetry import LBrot90, LBmirror, D4Symmetry, D4AntiSymmetry, AlgReconstruction
 from lbm_ml.model.losses import rmsre

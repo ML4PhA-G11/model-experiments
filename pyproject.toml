@@ -23,5 +23,8 @@ dev = [
     "jupyter",
 ]
 
+[tool.setuptools.packages.find]
+include = ["lbm_ml*"]
+
 [tool.uv]
-package = false
+package = true

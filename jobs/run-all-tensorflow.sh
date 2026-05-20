@@ -12,7 +12,7 @@
 # (Run this from the project root, NOT from inside jobs/.)
 #
 # Inspecting TensorBoard during or after the run (run on the login node):
-#   uv run tensorboard --logdir artifacts-run-all-tensorflow/tensorboard_logs --port 6006
+#   uv run tensorboard --logdir artifacts-run-all-tensorflow --port 6006
 # Then on your machine:
 #   ssh -NL 6006:localhost:6006 <user>@snellius.surf.nl
 #
