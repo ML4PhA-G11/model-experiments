@@ -3,16 +3,18 @@
 # build a cost/speed comparison table.
 #
 # What it does:
-#   1. (Once) Pre-installs tensorflow[and-cuda] into .venv so each GPU job
-#      does not race against the others trying to install it.
+#   1. (Once) Runs `uv sync` so the shared .venv matches uv.lock (which now
+#      includes tensorflow[and-cuda]) before any GPU job starts, instead of
+#      each job racing to install CUDA extras.
 #   2. sbatch-submits 4 jobs with overrides on top of jobs/run-all-tensorflow.sh:
 #        cpu_rome   rome     gpus=0  cpus=16
 #        gpu_mig    gpu_mig  gpus=1  cpus=9
 #        gpu_a100   gpu_a100 gpus=1  cpus=18
 #        gpu_h100   gpu_h100 gpus=1  cpus=16
 #   3. Waits for all four to finish (poll squeue every 30s).
-#   4. Parses each .out log for the `[job] Total wall time: ...` line plus
-#      sacct Elapsed/State and writes a markdown comparison to:
+#   4. Parses each .out log for the `[job] Total wall time: ...` line, the
+#      `[gpu] gpu_used=...` marker (to verify GPU jobs really used the GPU),
+#      plus sacct Elapsed/State and writes a markdown comparison to:
 #        artifacts-run-all-tensorflow/node-execution-time-comparison.md
 #      Also keeps the job-id map at:
 #        artifacts-run-all-tensorflow/sweep-jobs.tsv
@@ -68,17 +70,20 @@ export PATH="$HOME/.local/bin:$PATH"
 # 1. pre-install CUDA extras (idempotent, shared across jobs)
 ############################################
 if [[ $SUBMIT -eq 1 ]]; then
-    if ! uv pip show nvidia-cudnn-cu12 >/dev/null 2>&1; then
-        TF_VERSION="$(uv pip show tensorflow 2>/dev/null | awk '/^Version:/ {print $2}')"
-        if [[ -z "${TF_VERSION}" ]]; then
-            echo "[sweep] ERROR: tensorflow not in .venv — run scripts/snellius-py-runtime-setup.sh first." >&2
-            exit 1
-        fi
-        echo "[sweep] Installing tensorflow[and-cuda]==${TF_VERSION} into .venv (~2-3 GB) ..."
-        uv pip install --quiet "tensorflow[and-cuda]==${TF_VERSION}"
-    else
-        echo "[sweep] CUDA extras already in .venv — skip."
+    if [[ ! -f uv.lock ]]; then
+        echo "[sweep] ERROR: uv.lock not found — run scripts/snellius-py-runtime-setup.sh first." >&2
+        exit 1
     fi
+    # uv.lock pins tensorflow[and-cuda], so a single `uv sync` materialises the
+    # CUDA extras (~2-3 GB) into the shared .venv once. Idempotent: a no-op when
+    # the venv already matches the lock.
+    echo "[sweep] Syncing .venv to uv.lock (ensures tensorflow[and-cuda]) ..."
+    uv sync --quiet
+    if ! uv pip show nvidia-cudnn-cu12 >/dev/null 2>&1; then
+        echo "[sweep] ERROR: CUDA extras still missing after uv sync — check uv.lock." >&2
+        exit 1
+    fi
+    echo "[sweep] CUDA extras present in .venv."
 fi
 
 ############################################
@@ -177,25 +182,35 @@ echo "[sweep] All jobs have left the queue."
     echo
     echo "## Execution times"
     echo
-    echo "| Label | Partition | GPUs | CPUs | Job ID | Wall time | Slurm Elapsed | State | Speedup vs CPU |"
-    echo "|---|---|---|---|---|---|---|---|---|"
+    echo "| Label | Partition | GPUs req | CPUs | Job ID | GPUs visible | GPU used | Wall time | Slurm Elapsed | State | Speedup vs CPU |"
+    echo "|---|---|---|---|---|---|---|---|---|---|---|"
 } > "$SUMMARY"
 
-declare -A WALL_SEC WALL_HMS ELAPSED STATE
+declare -A WALL_SEC WALL_HMS ELAPSED STATE GPU_VIS GPU_USED
 
 while IFS=$'\t' read -r LABEL PART GPUS CPUS JID; do
     [[ "$LABEL" == "label" ]] && continue
     OUT="jobs/logs/lbm-tf-${LABEL}-${JID}.out"
     sec="N/A"; hms="N/A"
+    gpu_vis="N/A"; gpu_used="N/A"
     if [[ -f "$OUT" ]]; then
         line=$(grep -E '^\[job\] Total wall time:' "$OUT" | tail -1 || true)
         if [[ -n "$line" ]]; then
             sec=$(awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+s$/){gsub(/s/,"",$i); print $i; exit}}' <<<"$line")
             hms=$(grep -oE '\([0-9:]+\)' <<<"$line" | tr -d '()')
         fi
+        # GPU diagnostics emitted by run-all-tensorflow.py's report_gpu():
+        #   [gpu] visible_gpu_count=N
+        #   [gpu] gpu_used=yes|no
+        gv=$(grep -E '^\[gpu\] visible_gpu_count=' "$OUT" | tail -1 | sed 's/.*=//' || true)
+        [[ -n "$gv" ]] && gpu_vis="$gv"
+        gu=$(grep -E '^\[gpu\] gpu_used=' "$OUT" | tail -1 | sed 's/.*=//' || true)
+        [[ -n "$gu" ]] && gpu_used="$gu"
     fi
     WALL_SEC[$LABEL]="$sec"
     WALL_HMS[$LABEL]="$hms"
+    GPU_VIS[$LABEL]="$gpu_vis"
+    GPU_USED[$LABEL]="$gpu_used"
 
     sac=$(sacct -j "$JID" -X --noheader -P --format=Elapsed,State 2>/dev/null | head -1 || true)
     ELAPSED[$LABEL]="$(cut -d'|' -f1 <<<"$sac")"
@@ -217,11 +232,69 @@ while IFS=$'\t' read -r LABEL PART GPUS CPUS JID; do
     fi
     wall_str="N/A"
     [[ "$sec" != "N/A" ]] && wall_str="${sec}s (${hms})"
-    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+    gpu_vis="${GPU_VIS[$LABEL]:-N/A}"
+    gpu_used="${GPU_USED[$LABEL]:-N/A}"
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
         "$LABEL" "$PART" "$GPUS" "$CPUS" "$JID" \
+        "$gpu_vis" "$gpu_used" \
         "$wall_str" "$elapsed" "$state" "$speedup" \
         >> "$SUMMARY"
 done < "$MAP_FILE"
+
+############################################
+# 4b. GPU usage verification
+############################################
+# For each job decide whether the GPU outcome matches what was requested:
+#   GPUs req >= 1  -> expect gpu_used=yes  (otherwise the GPU sat idle / the
+#                     CUDA build of TF was missing and TF fell back to CPU)
+#   GPUs req == 0  -> expect gpu_used=no
+{
+    echo
+    echo "## GPU usage verification"
+    echo
+    echo "Parsed from the \`[gpu] gpu_used=...\` marker that"
+    echo "\`run-all-tensorflow.py\` prints after probing TensorFlow with a real"
+    echo "matmul on \`/GPU:0\`. A GPU job that reports \`no\` did **not** actually"
+    echo "use the GPU (e.g. \`tensorflow[and-cuda]\` not installed)."
+    echo
+    echo "| Label | Partition | GPUs req | GPUs visible | GPU used | Verdict |"
+    echo "|---|---|---|---|---|---|"
+} >> "$SUMMARY"
+
+GPU_FAIL=0
+while IFS=$'\t' read -r LABEL PART GPUS CPUS JID; do
+    [[ "$LABEL" == "label" ]] && continue
+    gpu_vis="${GPU_VIS[$LABEL]:-N/A}"
+    gpu_used="${GPU_USED[$LABEL]:-N/A}"
+    if [[ "$GPUS" -ge 1 ]]; then
+        if [[ "$gpu_used" == "yes" ]]; then
+            verdict="✅ GPU used"
+        elif [[ "$gpu_used" == "no" ]]; then
+            verdict="❌ GPU requested but NOT used"
+            GPU_FAIL=1
+        else
+            verdict="⚠️ unknown (no marker in log)"
+            GPU_FAIL=1
+        fi
+    else
+        if [[ "$gpu_used" == "no" ]]; then
+            verdict="✅ CPU-only as expected"
+        elif [[ "$gpu_used" == "yes" ]]; then
+            verdict="⚠️ unexpected GPU use"
+        else
+            verdict="⚠️ unknown (no marker in log)"
+        fi
+    fi
+    printf '| %s | %s | %s | %s | %s | %s |\n' \
+        "$LABEL" "$PART" "$GPUS" "$gpu_vis" "$gpu_used" "$verdict" >> "$SUMMARY"
+    echo "[sweep] GPU check — $LABEL ($PART): req=$GPUS visible=$gpu_vis used=$gpu_used -> $verdict"
+done < "$MAP_FILE"
+
+if [[ $GPU_FAIL -ne 0 ]]; then
+    echo "[sweep] WARNING: at least one GPU job did not actually use its GPU." >&2
+    echo "[sweep]          Check that 'tensorflow[and-cuda]' is installed in .venv" >&2
+    echo "[sweep]          and inspect the job's [gpu] lines in jobs/logs/." >&2
+fi
 
 {
     echo

@@ -23,8 +23,44 @@ from collections.abc import Callable
 from utils import *
 
 
-ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts-run-all-tensorflow"
+# Output directory. Override with RUN_ALL_TF_ARTIFACTS_DIR so concurrent jobs
+# (e.g. the partition sweep in scripts/01-exp-sweep.*) each write to their own
+# directory instead of racing on the same files.
+ARTIFACTS_DIR = Path(
+    os.environ.get(
+        "RUN_ALL_TF_ARTIFACTS_DIR",
+        Path(__file__).resolve().parent / "artifacts-run-all-tensorflow",
+    )
+).resolve()
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def report_gpu():
+    """Print parseable GPU diagnostics so callers (and the sweep script) can
+    verify whether TensorFlow actually saw and used a GPU for this run."""
+    print(f"[gpu] tensorflow={tf.__version__}", flush=True)
+    print(f"[gpu] built_with_cuda={tf.test.is_built_with_cuda()}", flush=True)
+    gpus = tf.config.list_physical_devices("GPU")
+    print(f"[gpu] visible_gpu_count={len(gpus)}", flush=True)
+    for i, g in enumerate(gpus):
+        print(f"[gpu] device[{i}]={g.name}", flush=True)
+    used = False
+    if gpus:
+        try:
+            with tf.device("/GPU:0"):
+                a = tf.random.normal([1024, 1024])
+                prod = tf.linalg.matmul(a, a)
+                _ = prod.numpy()
+            print(f"[gpu] matmul_device={prod.device}", flush=True)
+            used = "GPU" in prod.device.upper()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[gpu] matmul_error={exc!r}", flush=True)
+    print(f"[gpu] gpu_used={'yes' if used else 'no'}", flush=True)
+    print(f"[gpu] artifacts_dir={ARTIFACTS_DIR}", flush=True)
+    return used
+
+
+report_gpu()
 
 DATASET_PATH        = ARTIFACTS_DIR / "example_dataset.npz"
 WEIGHTS_PATH        = ARTIFACTS_DIR / "weights.keras"
@@ -177,9 +213,12 @@ def sol(t, L, F0, nu): return F0*np.exp(-2*nu*t / (L / (2*np.pi))**2  )
 #########################################################
 
 #####################################
-# settings 
+# settings
 
-n_samples = 100_000
+# Defaults reproduce the production run. The env overrides exist so a GPU/CPU
+# smoke test (e.g. verifying CUDA is actually used) can run end-to-end in
+# seconds instead of training for the full 200 epochs.
+n_samples = int(os.environ.get("RUN_ALL_TF_N_SAMPLES", 100_000))
 
 u_abs_min = 1e-15
 u_abs_max = 0.01
@@ -265,8 +304,8 @@ fpost = fpost / np.sum(fpost,axis=1)[:,np.newaxis]
 # split train and test set
 fpre_train, fpre_test, fpost_train, fpost_test = train_test_split(fpre, fpost, test_size=0.3, shuffle=True)
 
-batch_size=32
-n_epochs=200
+batch_size=int(os.environ.get("RUN_ALL_TF_BATCH_SIZE", 32))
+n_epochs=int(os.environ.get("RUN_ALL_TF_N_EPOCHS", 200))
 patience=50
 verbose=1
 
@@ -321,8 +360,8 @@ model.summary()
 
 nx      = 32   # grid size along x
 ny      = 32   # grid size along y
-niter   = 1000  # total number of steps
-dumpit  = 100    # collect data every dumpit iterations
+niter   = int(os.environ.get("RUN_ALL_TF_NITER", 1000))  # total number of steps
+dumpit  = int(os.environ.get("RUN_ALL_TF_DUMPIT", 100))  # collect data every dumpit iterations
 tau     = 1.0  # relaxation time
 u0      = 0.01 # initial velocity amplitude
 

@@ -8,7 +8,12 @@ dependencies = [
     "numba>=0.65.1",
     "numpy>=2.2.6",
     "scikit-learn>=1.7.2",
-    "tensorflow>=2.21.0",
+    # [and-cuda] pulls the CUDA runtime + cuDNN wheels so GPU jobs actually use
+    # the GPU. The wheels also run fine on CPU-only nodes (TF just reports no
+    # GPU), so a single shared .venv works across all Snellius partitions.
+    # A matching CUDA module must still be loaded at runtime (see
+    # jobs/run-all-tensorflow.sh) so TF can dlopen the driver libs.
+    "tensorflow[and-cuda]>=2.21.0",
     "setuptools>=70.0,<80.0",
     "tensorboard>=2.20.0",
 ]
