@@ -15,10 +15,11 @@ from sklearn.model_selection import train_test_split
 
 from keras.models import Sequential
 from keras.layers import Dense
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
 from keras import backend as K
 
 import datetime
+from collections.abc import Callable
 from utils import *
 
 
@@ -29,6 +30,7 @@ DATASET_PATH        = ARTIFACTS_DIR / "example_dataset.npz"
 WEIGHTS_PATH        = ARTIFACTS_DIR / "weights.keras"
 MODEL_PATH          = ARTIFACTS_DIR / "example_network.keras"
 LOSS_PLOT_PATH      = ARTIFACTS_DIR / "training_loss.png"
+TB_LOG_DIR          = ARTIFACTS_DIR / "tensorboard_logs"
 DECAY_PLOT_PATH     = ARTIFACTS_DIR / "velocity_decay.png"
 FIELDS_PLOT_DIR     = ARTIFACTS_DIR / "velocity_fields"
 FIELDS_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,9 +131,9 @@ def sequential_model(Q=9, n_hidden_layers=2, n_per_layer=50, activation="relu",
 
     return model 
 
-def create_model(loss="mape", optimizer="adam", Q=9, 
-                 n_hidden_layers=2, n_per_layer=50, activation="relu", 
-                 ll_activation="linear", bias=False):
+def create_model(loss: str | Callable = "mape", optimizer: str = "adam", Q: int = 9,
+                 n_hidden_layers: int = 2, n_per_layer: int = 50, activation: str = "relu", 
+                 ll_activation: str = "linear", bias: bool = False):
     
     the_input = keras.Input(shape=(Q,))
 
@@ -276,11 +278,13 @@ es_callback = EarlyStopping(monitor="val_loss", patience=patience, restore_best_
 # Save best model during training
 ck_callback = ModelCheckpoint(filepath=str(WEIGHTS_PATH), monitor="val_loss", save_best_only=True)
 
-keras_callbacks = [es_callback, ck_callback]
+tb_callback = TensorBoard(log_dir=str(TB_LOG_DIR), histogram_freq=1)
+
+keras_callbacks = [es_callback, ck_callback, tb_callback]
 
 ## training the model
 hist = model.fit(fpre_train, fpost_train, 
-                 epochs=n_epochs, verbose=verbose, callbacks=keras_callbacks, 
+                 epochs=n_epochs, verbose=verbose, callbacks=keras_callbacks,  # pyright: ignore[reportArgumentType]
                  validation_data=(fpre_test, fpost_test), batch_size=batch_size)
 
 model.load_weights(str(WEIGHTS_PATH))
@@ -309,7 +313,7 @@ K.set_floatx('float64')
 ##########################################################
 # Import trained model from file
 
-model = keras.models.load_model(str(MODEL_PATH), custom_objects={'rmsre': rmsre})
+model: keras.models.Model = keras.models.load_model(str(MODEL_PATH), custom_objects={'rmsre': rmsre}) # pyright: ignore[reportAssignmentType]
 model.summary()
 
 ###########################################################
@@ -394,7 +398,7 @@ for t in range(1, niter):
     fpre = fpre / norm
 
     # Make prediction
-    f2 = model.predict( fpre, verbose=verbose)
+    f2 = model.predict( fpre, verbose=verbose) # pyright: ignore[reportArgumentType]
 
     # Rescale output
     f2 = norm*f2

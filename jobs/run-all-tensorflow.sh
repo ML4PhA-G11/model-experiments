@@ -11,6 +11,11 @@
 # Submit with:  sbatch jobs/run-all-tensorflow.sh
 # (Run this from the project root, NOT from inside jobs/.)
 #
+# Inspecting TensorBoard during or after the run (run on the login node):
+#   uv run tensorboard --logdir artifacts-run-all-tensorflow/tensorboard_logs --port 6006
+# Then on your machine:
+#   ssh -NL 6006:localhost:6006 <user>@snellius.surf.nl
+#
 # Switching to GPU (requires `uv add tensorflow[and-cuda]` first):
 #   #SBATCH --partition=gpu_a100
 #   #SBATCH --gpus=1
