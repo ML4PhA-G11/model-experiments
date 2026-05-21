@@ -115,7 +115,7 @@ echo "[job] CPUs allocated: ${NCPU}"
 # `uv run` activates .venv automatically and uses uv.lock for reproducibility.
 # -u flushes stdout so the .out file streams instead of buffering.
 echo "[job] Launching run-all-tensorflow.py ..."
-uv run python -u run-all-tensorflow.py
+uv run python -u run_all.py
 
 RUN_RC=$?
 

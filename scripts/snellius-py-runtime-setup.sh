@@ -118,6 +118,10 @@ fi
 # the CLAUDE.md convention. We pin uv to the module-provided Python so the
 # venv lives on the same interpreter the cluster ships, instead of letting
 # uv download its own.
+
+# Add tensorflow[and-cuda] to the venv, which pulls in the CUDA runtime and cuDNN wheels so GPU jobs can actually use the GPU.
+echo "[setup] Adding tensorflow[and-cuda] to the venv (pulls in CUDA runtime + cuDNN) ..."
+uv add --python "$PYTHON_BIN" "tensorflow[and-cuda]>=2.21.0"
 echo "[setup] Running 'uv sync' (creates .venv, installs locked deps) ..."
 uv sync --python "$PYTHON_BIN"
 
