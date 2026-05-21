@@ -67,37 +67,17 @@ mkdir -p "$RUN_ALL_TF_ARTIFACTS_DIR"
 echo "[job] Artifacts dir: ${RUN_ALL_TF_ARTIFACTS_DIR}"
 
 ############################################
-# 2. environment — same modules as the setup script
+# 2. environment
 ############################################
-if ! command -v module >/dev/null 2>&1; then
-    if [[ -f /etc/profile.d/lmod.sh ]]; then
-        # shellcheck disable=SC1091
-        source /etc/profile.d/lmod.sh
-    fi
-fi
-
-module purge
-module load 2024
-module load Python/3.12.3-GCCcore-13.3.0
-# CUDA runtime so TensorFlow can dlopen the GPU/driver libraries. Without this
-# (and the LD_LIBRARY_PATH below) TF logs "Cannot dlopen some GPU libraries",
-# reports 0 visible GPUs, and silently runs on CPU even on a GPU node. Safe to
-# load on CPU partitions too — it just goes unused there.
-module load CUDA/12.6.0 || echo "[job] WARNING: CUDA/12.6.0 module not available"
-
 export PATH="$HOME/.local/bin:$PATH"  # for uv
 
 # tensorflow[and-cuda] ships its own CUDA/cuDNN/cuBLAS wheels under
-# .venv/.../site-packages/nvidia/*/lib. Put them ahead on LD_LIBRARY_PATH so TF
-# loads the exact versions it was built against (matches the CUDA module above).
+# .venv/.../site-packages/nvidia/*/lib.
 NV_LIB_DIRS="$(ls -d "$PROJECT_ROOT"/.venv/lib/python*/site-packages/nvidia/*/lib 2>/dev/null | paste -sd: -)"
 if [[ -n "$NV_LIB_DIRS" ]]; then
     export LD_LIBRARY_PATH="${NV_LIB_DIRS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     echo "[job] Added venv NVIDIA libs to LD_LIBRARY_PATH."
 fi
-
-echo "[job] Loaded modules:"
-module list 2>&1 | sed 's/^/         /'
 
 ############################################
 # 3. point TF / numba at the allocated cores
