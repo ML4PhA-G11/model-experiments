@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=lbm-tf
-#SBATCH --partition=rome
+#SBATCH --partition=gpu_h100
 #SBATCH --nodes=1
+#SBATCH --gpus=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=01:00:00
 #SBATCH --output=jobs/logs/%x-%j.out
 #SBATCH --error=jobs/logs/%x-%j.err
 #
-# Submit with:  sbatch jobs/run-all-tensorflow.sh
+# Submit with (without options): sbatch jobs/run-all-tensorflow.sh
+# Submit with (with options): sbatch --export=ALL,MODEL=<model>,<other_options> jobs/run-all-tensorflow.sh
 # (Run this from the project root, NOT from inside jobs/.)
 #
 # Inspecting TensorBoard during or after the run (run on the login node):
@@ -94,8 +96,16 @@ echo "[job] CPUs allocated: ${NCPU}"
 ############################################
 # `uv run` activates .venv automatically and uses uv.lock for reproducibility.
 # -u flushes stdout so the .out file streams instead of buffering.
-echo "[job] Launching run-all-tensorflow.py ..."
-uv run python -u run_all.py
+
+# Allow the following env vars to override the defaults for quick experimentation 
+BATCH_SIZE="${BATCH_SIZE:-32}"
+N_EPOCHS="${N_EPOCHS:-200}"
+MODEL="${MODEL:-d4equivariant}"
+PATIENCE="${PATIENCE:-50}"
+LR="${LR:-1e-3}"
+RUN_NAME="${RUN_NAME:-${MODEL}_bs${BATCH_SIZE}_ep${N_EPOCHS}_pat${PATIENCE}_lr${LR}}"
+echo "[job] Launching run-all-tensorflow.py (batch_size=${BATCH_SIZE}, model=${MODEL}, n_epochs=${N_EPOCHS}, patience=${PATIENCE}, learning_rate=${LR}, run_name=${RUN_NAME})..."
+uv run run_all.py --model "${MODEL}" --batch-size "${BATCH_SIZE}" --n-epochs "${N_EPOCHS}" --patience "${PATIENCE}" --learning-rate "${LR}" --run-name "${RUN_NAME}"
 
 RUN_RC=$?
 
