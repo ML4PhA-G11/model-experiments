@@ -188,7 +188,12 @@ def load_simulation_pairs(
     logger.info(
         "Loaded simulator data from %s: %d steps -> %d collision pairs "
         "(samples_per_step=%s, step_stride=%d, drop_negative=%s)",
-        data_dir, len(steps), fpre.shape[0], samples_per_step, step_stride, drop_negative,
+        data_dir,
+        len(steps),
+        fpre.shape[0],
+        samples_per_step,
+        step_stride,
+        drop_negative,
     )
     return feq, fpre, fpost
 
