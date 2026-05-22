@@ -78,7 +78,7 @@ def _wrap_d4(
 
     the_output = layers.Average()(output_lst)
     model = keras.Model(inputs=the_input, outputs=the_output)
-    model.compile(loss=loss, optimizer=optimizer)
+    model.compile(loss=loss, optimizer=optimizer, jit_compile=False)
     return model
 
 
