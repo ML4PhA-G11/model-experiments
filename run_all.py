@@ -23,6 +23,7 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, T
 from sklearn.model_selection import train_test_split
 
 from lbm_ml.data.generation import generate_dataset, load_data
+from lbm_ml.data.simulation import load_simulation_pairs
 from lbm_ml.lattice.stencil import LB_stencil
 from lbm_ml.model.losses import rmsre
 from lbm_ml.model.network import MODEL_REGISTRY
@@ -115,8 +116,20 @@ def train(
     run_name: str | None = None,
     dataset_path: Path | None = None,
     run_dir: Path | None = None,
+    data_dir: Path | None = None,
+    samples_per_step: int | None = None,
+    step_stride: int = 1,
+    max_steps: int | None = None,
 ) -> keras.Model:
-    """Load the dataset, train the selected network, and save artifacts under a timestamped run dir."""
+    """Load the dataset, train the selected network, and save artifacts under a timestamped run dir.
+
+    Data source:
+      * data_dir set     -> consume real simulator output (per-step fpre/fpost
+        .npy pairs from lbm_karman-ng.py --save-every N) via load_simulation_pairs.
+      * data_dir is None -> load the synthetic .npz dataset at dataset_path
+        (the Taylor-Green-style set produced by generate_dataset).
+    Both paths yield (f_eq, f_pre, f_post) arrays of shape (N, 9).
+    """
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model '{model_name}'. Choose from: {list(MODEL_REGISTRY)}")
 
@@ -130,7 +143,15 @@ def train(
     paths = _run_paths(run_dir)
     print(f"Run dir: {run_dir}")
 
-    feq, fpre, fpost = load_data(dataset_path)
+    if data_dir is not None:
+        feq, fpre, fpost = load_simulation_pairs(
+            data_dir,
+            samples_per_step=samples_per_step,
+            step_stride=step_stride,
+            max_steps=max_steps,
+        )
+    else:
+        feq, fpre, fpost = load_data(dataset_path)
 
     # Normalise on density so all inputs/outputs sum to 1
     feq   = feq   / np.sum(feq,   axis=1)[:, np.newaxis]
@@ -339,6 +360,18 @@ def _parse_args():
                    help="Training batch size")
     p.add_argument("--learning-rate", type=float, default=1e-3,
                    help="Initial Adam learning rate (default: 1e-3)")
+    p.add_argument("--data-dir", default=None,
+                   help="Directory of real simulator output (fpre_*.npy / fpost_*.npy "
+                        "pairs from lbm_karman-ng.py --save-every N). When set, training "
+                        "uses this instead of the synthetic generated dataset, and "
+                        "generation is skipped automatically.")
+    p.add_argument("--samples-per-step", type=int, default=None,
+                   help="With --data-dir: randomly sub-sample this many lattice nodes "
+                        "per saved timestep (default: use all ~Nx*Ny nodes).")
+    p.add_argument("--step-stride", type=int, default=1,
+                   help="With --data-dir: use every Nth saved timestep (default: 1).")
+    p.add_argument("--max-steps", type=int, default=None,
+                   help="With --data-dir: cap the number of timesteps loaded.")
     p.add_argument("--skip-generate", action="store_true",
                    help="Skip dataset generation (reuse existing file)")
     p.add_argument("--skip-train", action="store_true",
@@ -361,6 +394,11 @@ if __name__ == "__main__":
     run_dir = _make_run_dir(args.model, args.run_name, timestamp)
     dataset_path = run_dir / "example_dataset.npz"
 
+    # When consuming real simulator output we never synthesise a dataset.
+    data_dir = Path(args.data_dir) if args.data_dir else None
+    if data_dir is not None:
+        args.skip_generate = True
+
     if not args.skip_generate:
         generate(dataset_path)
     if not args.skip_train:
@@ -368,7 +406,11 @@ if __name__ == "__main__":
               n_epochs=args.n_epochs, patience=args.patience,
               learning_rate=args.learning_rate,
               tensorboard=args.tensorboard,
-              dataset_path=dataset_path, run_dir=run_dir)
+              dataset_path=dataset_path, run_dir=run_dir,
+              data_dir=data_dir,
+              samples_per_step=args.samples_per_step,
+              step_stride=args.step_stride,
+              max_steps=args.max_steps)
     if not args.skip_simulate:
         sim_run_dir = Path(args.run_dir) if args.run_dir else run_dir
         simulate(model_name=args.model, run_dir=sim_run_dir)
