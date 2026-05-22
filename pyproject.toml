@@ -12,6 +12,7 @@ dependencies = [
     "tensorflow>=2.21.0",
     "setuptools>=70.0,<80.0",
     "tensorboard>=2.20.0",
+    "tqdm>=4.67.3",
 ]
 
 [dependency-groups]
