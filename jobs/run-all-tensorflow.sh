@@ -10,7 +10,7 @@
 #SBATCH --error=jobs/logs/%x-%j.err
 #
 # Submit with (without options): sbatch jobs/run-all-tensorflow.sh
-# Submit with (with options): sbatch --export=ALL,MODEL=<model>,<other_options> jobs/run-all-tensorflow.sh
+# Submit with (with options): sbatch --export=ALL,MODEL=<model>,BATCH_SIZE=<batch_size>,N_EPOCHS=<n_epochs>,PATIENCE=<patience>,LR=<learning_rate> jobs/run-all-tensorflow.sh
 # (Run this from the project root, NOT from inside jobs/.)
 #
 # Inspecting TensorBoard during or after the run (run on the login node):
@@ -104,7 +104,7 @@ MODEL="${MODEL:-d4equivariant}"
 PATIENCE="${PATIENCE:-50}"
 LR="${LR:-1e-3}"
 RUN_NAME="${RUN_NAME:-${MODEL}_bs${BATCH_SIZE}_ep${N_EPOCHS}_pat${PATIENCE}_lr${LR}}"
-echo "[job] Launching run-all-tensorflow.py (batch_size=${BATCH_SIZE}, model=${MODEL}, n_epochs=${N_EPOCHS}, patience=${PATIENCE}, learning_rate=${LR}, run_name=${RUN_NAME})..."
+echo "[job] Launching run-all-tensorflow.py (BATCH_SIZE=${BATCH_SIZE}, MODEL=${MODEL}, N_EPOCHS=${N_EPOCHS}, PATIENCE=${PATIENCE}, LR=${LR}, RUN_NAME=${RUN_NAME})..."
 uv run run_all.py --model "${MODEL}" --batch-size "${BATCH_SIZE}" --n-epochs "${N_EPOCHS}" --patience "${PATIENCE}" --learning-rate "${LR}" --run-name "${RUN_NAME}"
 
 RUN_RC=$?
