@@ -3,6 +3,9 @@ from lbm_ml.lattice.symmetry import LBrot90, LBmirror, D4Symmetry, D4AntiSymmetr
 
 __all__ = [
     "LB_stencil",
-    "LBrot90", "LBmirror",
-    "D4Symmetry", "D4AntiSymmetry", "AlgReconstruction",
+    "LBrot90",
+    "LBmirror",
+    "D4Symmetry",
+    "D4AntiSymmetry",
+    "AlgReconstruction",
 ]

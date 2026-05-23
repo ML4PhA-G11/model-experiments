@@ -4,7 +4,10 @@ from lbm_ml.model.losses import rmsre
 
 __all__ = [
     "LB_stencil",
-    "LBrot90", "LBmirror",
-    "D4Symmetry", "D4AntiSymmetry", "AlgReconstruction",
+    "LBrot90",
+    "LBmirror",
+    "D4Symmetry",
+    "D4AntiSymmetry",
+    "AlgReconstruction",
     "rmsre",
 ]

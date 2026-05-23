@@ -69,11 +69,11 @@ class D4Symmetry(keras.layers.Layer):
 
     def call(self, x):
         return [
-            x,                          # identity (0°)
-            LBrot90(x, k=1),            # 90° CCW
-            LBrot90(x, k=2),            # 180°
-            LBrot90(x, k=3),            # 270° CCW
-            LBmirror(x),                # mirror
+            x,  # identity (0°)
+            LBrot90(x, k=1),  # 90° CCW
+            LBrot90(x, k=2),  # 180°
+            LBrot90(x, k=3),  # 270° CCW
+            LBmirror(x),  # mirror
             LBmirror(LBrot90(x, k=1)),  # mirror ∘ 90°
             LBmirror(LBrot90(x, k=2)),  # mirror ∘ 180°
             LBmirror(LBrot90(x, k=3)),  # mirror ∘ 270°
@@ -96,11 +96,11 @@ class D4AntiSymmetry(keras.layers.Layer):
 
     def call(self, x):
         return [
-            x[0],                        # identity — no transform needed
-            LBrot90(x[1], k=-1),         # undo 90° CCW → rotate 90° CW
-            LBrot90(x[2], k=-2),         # undo 180°
-            LBrot90(x[3], k=-3),         # undo 270° CCW
-            LBmirror(x[4]),              # mirror is its own inverse
+            x[0],  # identity — no transform needed
+            LBrot90(x[1], k=-1),  # undo 90° CCW → rotate 90° CW
+            LBrot90(x[2], k=-2),  # undo 180°
+            LBrot90(x[3], k=-3),  # undo 270° CCW
+            LBmirror(x[4]),  # mirror is its own inverse
             LBrot90(LBmirror(x[5]), k=-1),
             LBrot90(LBmirror(x[6]), k=-2),
             LBrot90(LBmirror(x[7]), k=-3),
