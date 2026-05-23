@@ -7,7 +7,7 @@
 set -euo pipefail
 
 model="d4equivariant"
-batch_size=32
+batch_size=8192
 n_epochs=4000
 patience=12800
 
