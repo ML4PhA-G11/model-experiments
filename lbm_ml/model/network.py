@@ -252,8 +252,67 @@ def create_lenn_model(
 # Model registry — maps name → factory function
 # ---------------------------------------------------------------------------
 
+def create_lenn_resnet_model(
+    loss: str | Callable = "mape",
+    optimizer: str = "adam",
+    Q: int = 9,
+    channels: tuple[int, ...] = (8, 8, 8),
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    use_bias: bool = True,
+    **_kwargs,
+) -> keras.Model:
+    """LENN with residual blocks (LENN+ResNet) collision operator surrogate.
+
+    Architecture:
+      f_pre -> reshape (Q,1) -> entry LENNLayer -> residual blocks
+            -> exit LENNLayer (1 ch) -> reshape (Q,) -> ll_activation
+            -> AlgReconstruction -> f_post
+
+    Each residual block follows the two-layer pattern:
+        x_new = LENNLayer_linear(LENNLayer_activate(x)) + x
+    When consecutive channel counts differ a linear LENN projection is used
+    for the shortcut so dimensions always match before the Add.
+
+    Args:
+        channels: hidden channel count for each residual block.  All equal
+                  gives a pure ResNet; varying counts add projection shortcuts.
+        use_bias: whether to include learnable bias in each LENN layer.
+        **_kwargs: silently absorbs unused MLP-style kwargs (n_hidden_layers, etc.)
+    """
+    inp = keras.Input(shape=(Q,))
+
+    x = keras.layers.Reshape((Q, 1))(inp)  # (batch, Q, 1)
+
+    # Entry projection: 1 -> channels[0]
+    x = LENNLayer(channels[0], activation=activation, use_bias=use_bias)(x)
+
+    prev_c = channels[0]
+    for c in channels:
+        residual = x
+        x = LENNLayer(c, activation=activation, use_bias=use_bias)(x)
+        # No activation: output can be negative so skip corrects in either direction
+        x = LENNLayer(c, activation="linear", use_bias=use_bias)(x)
+        if prev_c != c:
+            residual = LENNLayer(c, activation="linear", use_bias=use_bias)(residual)
+        x = layers.Add()([x, residual])
+        prev_c = c
+
+    # Exit projection: channels[-1] -> 1
+    x = LENNLayer(1, activation="linear", use_bias=use_bias)(x)
+    x = keras.layers.Reshape((Q,))(x)  # (batch, Q)
+    x = keras.layers.Activation(ll_activation)(x)
+
+    out = AlgReconstruction()(inp, x)
+
+    model = keras.Model(inputs=inp, outputs=out)
+    model.compile(loss=loss, optimizer=optimizer, jit_compile=cast(str, False))
+    return model
+
+
 MODEL_REGISTRY: dict[str, Callable] = {
     "d4equivariant": create_model,
     "resnet": create_resnet_model,
     "lenn": create_lenn_model,
+    "lenn_resnet": create_lenn_resnet_model,
 }
