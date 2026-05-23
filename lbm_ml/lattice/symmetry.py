@@ -1,5 +1,71 @@
-import tensorflow as tf
+import numpy as np
 import keras
+
+
+def compute_d2q9_orbit_indices() -> np.ndarray:
+    """Return a (9, 9) int array mapping each weight-matrix entry to its D4 orbit.
+
+    Under the D4 symmetry group of the square lattice, the equivariance constraint
+    AP = PA forces A[i,j] = A[π(i), π(j)] for every group generator permutation π.
+    This function finds all such orbits of pairs (i,j) using BFS over the two
+    generators R (90° CCW rotation) and S (x-axis mirror), yielding 15 orbits
+    for D2Q9 — the 15 free weight parameters per (C_in, C_out) channel pair.
+
+    The permutation arrays are derived directly from LBrot90(k=1) and LBmirror:
+      new[i] = old[perm[i]], so the equivariance condition is A[i,j] = A[π(i),π(j)].
+    """
+    Q = 9
+    perm_R = np.array([0, 4, 1, 2, 3, 8, 5, 6, 7])  # LBrot90(k=1)
+    perm_S = np.array([0, 1, 4, 3, 2, 8, 7, 6, 5])  # LBmirror
+
+    orbit_map = np.full((Q, Q), -1, dtype=np.int32)
+    orbit_id = 0
+
+    for si in range(Q):
+        for sj in range(Q):
+            if orbit_map[si, sj] != -1:
+                continue
+            queue = [(si, sj)]
+            orbit_map[si, sj] = orbit_id
+            while queue:
+                i, j = queue.pop()
+                for perm in (perm_R, perm_S):
+                    ni, nj = int(perm[i]), int(perm[j])
+                    if orbit_map[ni, nj] == -1:
+                        orbit_map[ni, nj] = orbit_id
+                        queue.append((ni, nj))
+            orbit_id += 1
+
+    return orbit_map  # values in [0, 14], 15 distinct orbits
+
+
+def compute_d2q9_bias_orbit_indices() -> np.ndarray:
+    """Return a (9,) int array mapping each bias component to its D4 orbit.
+
+    The three orbits are: {0} (rest), {1,2,3,4} (axis-aligned), {5,6,7,8} (diagonal).
+    """
+    Q = 9
+    perm_R = np.array([0, 4, 1, 2, 3, 8, 5, 6, 7])
+    perm_S = np.array([0, 1, 4, 3, 2, 8, 7, 6, 5])
+
+    orbit_map = np.full(Q, -1, dtype=np.int32)
+    orbit_id = 0
+
+    for s in range(Q):
+        if orbit_map[s] != -1:
+            continue
+        queue = [s]
+        orbit_map[s] = orbit_id
+        while queue:
+            i = queue.pop()
+            for perm in (perm_R, perm_S):
+                ni = int(perm[i])
+                if orbit_map[ni] == -1:
+                    orbit_map[ni] = orbit_id
+                    queue.append(ni)
+        orbit_id += 1
+
+    return orbit_map  # values in [0, 2], 3 distinct orbits
 
 
 def LBrot90(f, k=1):
@@ -10,8 +76,8 @@ def LBrot90(f, k=1):
     """
     # Index 0 (rest) is unchanged.
     # Indices 1–4 (axis-aligned) and 5–8 (diagonal) each cycle as a group.
-    return tf.concat(
-        [f[:, 0, None], tf.roll(f[:, 1:5], k, axis=-1), tf.roll(f[:, 5:], k, axis=-1)],
+    return keras.ops.concatenate(
+        [f[:, 0, None], keras.ops.roll(f[:, 1:5], k, axis=-1), keras.ops.roll(f[:, 5:], k, axis=-1)],
         axis=-1,
     )
 
@@ -23,7 +89,7 @@ def LBmirror(f):
     are exchanged with their -y counterparts:
         2 (N) ↔ 4 (S),  5 (NE) ↔ 8 (SE),  6 (NW) ↔ 7 (SW)
     """
-    return tf.concat(
+    return keras.ops.concatenate(
         [
             f[:, 0, None],  # rest — unchanged
             f[:, 1, None],  # East — unchanged (on mirror axis)
@@ -152,7 +218,7 @@ class AlgReconstruction(keras.layers.Layer):
         df8 = -0.5 * (df[:, 0] + df[:, 1] + df[:, 3] + 2 * df[:, 4] + 2 * df[:, 7])
 
         # Reassemble the full correction vector with the reconstructed directions
-        df = tf.concat(
+        df = keras.ops.concatenate(
             [
                 df[:, 0, None],
                 df[:, 1, None],

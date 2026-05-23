@@ -1,11 +1,17 @@
 from collections.abc import Callable
-
+from typing import cast
 import keras
 from keras import layers
 from keras.models import Sequential
 from keras.layers import Dense
 
-from lbm_ml.lattice.symmetry import D4Symmetry, D4AntiSymmetry, AlgReconstruction
+from lbm_ml.lattice.symmetry import (
+    D4Symmetry,
+    D4AntiSymmetry,
+    AlgReconstruction,
+    compute_d2q9_orbit_indices,
+    compute_d2q9_bias_orbit_indices,
+)
 from lbm_ml.model.losses import rmsre
 
 # ---------------------------------------------------------------------------
@@ -78,7 +84,7 @@ def _wrap_d4(
 
     the_output = layers.Average()(output_lst)
     model = keras.Model(inputs=the_input, outputs=the_output)
-    model.compile(loss=loss, optimizer=optimizer, jit_compile=False)
+    model.compile(loss=loss, optimizer=optimizer, jit_compile=cast(str, False))
     return model
 
 
@@ -124,10 +130,189 @@ def create_resnet_model(
 
 
 # ---------------------------------------------------------------------------
+# LENN: lattice-equivariant neural network (Ortali et al. 2025)
+# ---------------------------------------------------------------------------
+
+
+@keras.saving.register_keras_serializable(package="lbm")
+class LENNLayer(keras.layers.Layer):
+    """Single lattice-equivariant layer for D2Q9 under D4 symmetry.
+
+    Maps (batch, Q, C_in) → (batch, Q, C_out) via an equivariant affine
+    transform followed by a pointwise activation.
+
+    The weight matrix A ∈ R^{Q×Q×C_in×C_out} satisfies AP = PA for every
+    generator P of D4, leaving only 15 free weight scalars (instead of Q²=81)
+    per (C_in, C_out) channel pair.  The bias has 3 free scalars (one per
+    population orbit: rest / axis-aligned / diagonal).
+
+    Implementation: free parameters Ã ∈ R^{15×C_in×C_out} are stored; the
+    full matrix is reconstructed on-the-fly as A_full = gather(Ã, orbit_idx),
+    then contracted with the input via einsum 'ijca,bjc→bia'.
+
+    Reference: Ortali et al., AIAA J. 63(2), 716-731 (2025).
+               https://doi.org/10.2514/1.J064453
+    """
+
+    def __init__(self, channels_out: int, activation: str = "relu", use_bias: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        self.channels_out = channels_out
+        self.activation_fn = keras.activations.get(activation)
+        self.use_bias = use_bias
+
+    def build(self, input_shape):
+        C_in = int(input_shape[-1])
+
+        orbit_idx = compute_d2q9_orbit_indices()  # (9, 9)
+        n_orbits = int(orbit_idx.max()) + 1  # = 15 for D2Q9
+        self._orbit_idx = orbit_idx.astype("int32")
+
+        self.A_tilde = self.add_weight(
+            name="A_tilde",
+            shape=(n_orbits, C_in, self.channels_out),
+            initializer="glorot_uniform",
+        )
+
+        if self.use_bias:
+            bias_idx = compute_d2q9_bias_orbit_indices()  # (9,)
+            n_bias = int(bias_idx.max()) + 1  # = 3 for D2Q9
+            self._bias_idx = bias_idx.astype("int32")
+            self.b_tilde = self.add_weight(
+                name="b_tilde",
+                shape=(n_bias, self.channels_out),
+                initializer="zeros",
+            )
+
+        super().build(input_shape)
+
+    def call(self, x):
+        # Reconstruct full (9, 9, C_in, C_out) weight tensor via orbit indexing
+        A_full = keras.ops.take(self.A_tilde, self._orbit_idx, axis=0)
+        # out[b,i,a] = Σ_{j,c} A_full[i,j,c,a] * x[b,j,c]
+        out = keras.ops.einsum("ijca,bjc->bia", A_full, x)
+        if self.use_bias:
+            b_full = keras.ops.take(self.b_tilde, self._bias_idx, axis=0)  # (9, C_out)
+            out = out + b_full[None]
+        return self.activation_fn(out)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "channels_out": self.channels_out,
+                "activation": keras.activations.serialize(self.activation_fn),
+                "use_bias": self.use_bias,
+            }
+        )
+        return config
+
+
+def create_lenn_model(
+    loss: str | Callable = "mape",
+    optimizer: str = "adam",
+    Q: int = 9,
+    channels: tuple[int, ...] = (1, 8, 8, 10),
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    use_bias: bool = True,
+    **_kwargs,
+) -> keras.Model:
+    """Lattice-equivariant neural network (LENN) collision operator surrogate.
+
+    Architecture:
+      f_pre → reshape (Q,1) → LENN hidden layers → LENN output layer (1 ch)
+            → reshape (Q,) → ll_activation → AlgReconstruction → f_post
+
+    Each LENNLayer is equivariant under D4 by construction — no group averaging
+    needed, so inference cost is the same as a plain MLP.  AlgReconstruction
+    enforces mass and momentum conservation algebraically.
+
+    Args:
+        channels: C_out for each hidden LENN layer (default matches paper Table 1).
+        use_bias: whether to include learnable bias in each LENN layer.
+        **_kwargs: silently absorbs unused MLP-style kwargs (n_hidden_layers, etc.)
+    """
+    inp = keras.Input(shape=(Q,))
+
+    x = keras.layers.Reshape((Q, 1))(inp)  # (batch, Q, 1)
+    for c in channels:
+        x = LENNLayer(c, activation=activation, use_bias=use_bias)(x)
+    x = LENNLayer(1, activation="linear", use_bias=use_bias)(x)  # output ch
+    x = keras.layers.Reshape((Q,))(x)  # (batch, Q)
+    x = keras.layers.Activation(ll_activation)(x)
+
+    out = AlgReconstruction()(inp, x)
+
+    model = keras.Model(inputs=inp, outputs=out)
+    model.compile(loss=loss, optimizer=optimizer, jit_compile=cast(str, False))
+    return model
+
+
+# ---------------------------------------------------------------------------
 # Model registry — maps name → factory function
 # ---------------------------------------------------------------------------
+
+def create_lenn_resnet_model(
+    loss: str | Callable = "mape",
+    optimizer: str = "adam",
+    Q: int = 9,
+    channels: tuple[int, ...] = (8, 8, 8),
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    use_bias: bool = True,
+    **_kwargs,
+) -> keras.Model:
+    """LENN with residual blocks (LENN+ResNet) collision operator surrogate.
+
+    Architecture:
+      f_pre -> reshape (Q,1) -> entry LENNLayer -> residual blocks
+            -> exit LENNLayer (1 ch) -> reshape (Q,) -> ll_activation
+            -> AlgReconstruction -> f_post
+
+    Each residual block follows the two-layer pattern:
+        x_new = LENNLayer_linear(LENNLayer_activate(x)) + x
+    When consecutive channel counts differ a linear LENN projection is used
+    for the shortcut so dimensions always match before the Add.
+
+    Args:
+        channels: hidden channel count for each residual block.  All equal
+                  gives a pure ResNet; varying counts add projection shortcuts.
+        use_bias: whether to include learnable bias in each LENN layer.
+        **_kwargs: silently absorbs unused MLP-style kwargs (n_hidden_layers, etc.)
+    """
+    inp = keras.Input(shape=(Q,))
+
+    x = keras.layers.Reshape((Q, 1))(inp)  # (batch, Q, 1)
+
+    # Entry projection: 1 -> channels[0]
+    x = LENNLayer(channels[0], activation=activation, use_bias=use_bias)(x)
+
+    prev_c = channels[0]
+    for c in channels:
+        residual = x
+        x = LENNLayer(c, activation=activation, use_bias=use_bias)(x)
+        # No activation: output can be negative so skip corrects in either direction
+        x = LENNLayer(c, activation="linear", use_bias=use_bias)(x)
+        if prev_c != c:
+            residual = LENNLayer(c, activation="linear", use_bias=use_bias)(residual)
+        x = layers.Add()([x, residual])
+        prev_c = c
+
+    # Exit projection: channels[-1] -> 1
+    x = LENNLayer(1, activation="linear", use_bias=use_bias)(x)
+    x = keras.layers.Reshape((Q,))(x)  # (batch, Q)
+    x = keras.layers.Activation(ll_activation)(x)
+
+    out = AlgReconstruction()(inp, x)
+
+    model = keras.Model(inputs=inp, outputs=out)
+    model.compile(loss=loss, optimizer=optimizer, jit_compile=cast(str, False))
+    return model
+
 
 MODEL_REGISTRY: dict[str, Callable] = {
     "d4equivariant": create_model,
     "resnet": create_resnet_model,
+    "lenn": create_lenn_model,
+    "lenn_resnet": create_lenn_resnet_model,
 }
