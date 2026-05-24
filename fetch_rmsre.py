@@ -24,6 +24,7 @@ Options:
 
 import argparse
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -70,7 +71,25 @@ def _resolve_models(inputs: list[str]) -> list[tuple[str, Path]]:
     return entries
 
 
-def _eval_model(model_path: Path, fpre: np.ndarray, fpost: np.ndarray) -> tuple[float, float]:
+def _extract_meta(title: str, model: keras.Model) -> dict[str, str]:
+    """Extract training hyperparameters from optimizer config and folder name."""
+    meta: dict[str, str] = {}
+    try:
+        lr = model.optimizer.get_config().get("learning_rate")
+        if lr is not None:
+            meta["lr"] = f"{float(lr):.0e}"
+    except Exception:
+        pass
+    for key, pattern in [("bs", r"bs(\d+)"), ("ep", r"ep(\d+)")]:
+        m = re.search(pattern, title)
+        if m:
+            meta[key] = m.group(1)
+    return meta
+
+
+def _eval_model(
+    title: str, model_path: Path, fpre: np.ndarray, fpost: np.ndarray
+) -> tuple[float, float, dict[str, str]]:
     model: keras.Model = keras.models.load_model(
         str(model_path), custom_objects={"rmsre": rmsre}
     )  # pyright: ignore[reportAssignmentType]
@@ -80,7 +99,7 @@ def _eval_model(model_path: Path, fpre: np.ndarray, fpost: np.ndarray) -> tuple[
     ).numpy()  # pyright: ignore[reportAttributeAccessIssue,reportAssignmentType]
     mean = float(np.mean(per_sample))
     stderr = float(np.std(per_sample) / np.sqrt(len(per_sample)))
-    return mean, stderr
+    return mean, stderr, _extract_meta(title, model)
 
 
 def main():
@@ -100,27 +119,36 @@ def main():
     print(f"Generating {args.n_samples} test samples ...")
     fpre, fpost = _generate_test_data(args.n_samples)
 
-    results: list[tuple[str, float, float]] = []
+    results: list[tuple[str, float, float, dict[str, str]]] = []
     for title, model_path in entries:
         print(f"Evaluating {title} ...")
-        mean, stderr = _eval_model(model_path, fpre, fpost)
-        results.append((title, mean, stderr))
+        mean, stderr, meta = _eval_model(title, model_path, fpre, fpost)
+        results.append((title, mean, stderr, meta))
 
     if args.sort:
         results.sort(key=lambda r: r[1], reverse=(args.sort == "desc"))
 
-    val_col = max(len(_sci_fmt(m, s)) for _, m, s in results)
+    val_col = max(len(_sci_fmt(m, s)) for _, m, s, _ in results)
+    meta_keys = [k for k in ("bs", "ep", "lr") if any(k in r[3] for r in results)]
 
     if len(results) == 1:
-        title, mean, stderr = results[0]
-        print(f"\n{title}: RMSRE = {_sci_fmt(mean, stderr)}")
+        title, mean, stderr, meta = results[0]
+        meta_str = "  " + "  ".join(f"{k}={meta[k]}" for k in meta_keys if k in meta) if meta_keys else ""
+        print(f"\n{title}: RMSRE = {_sci_fmt(mean, stderr)}{meta_str}")
         return
 
     col = max(len(t) for t, *_ in results)
-    print(f"\n{'Model':<{col}}   {'RMSRE (mean ± stderr)':<{val_col}}")
-    print("-" * (col + 3 + val_col))
-    for title, mean, stderr in results:
-        print(f"{title:<{col}}   {_sci_fmt(mean, stderr):<{val_col}}")
+    meta_cols = {k: max(len(k), max(len(r[3].get(k, "")) for r in results)) for k in meta_keys}
+    header = f"{'Model':<{col}}   {'RMSRE (mean ± stderr)':<{val_col}}"
+    for k, w in meta_cols.items():
+        header += f"   {k:>{w}}"
+    print(f"\n{header}")
+    print("-" * len(header))
+    for title, mean, stderr, meta in results:
+        row = f"{title:<{col}}   {_sci_fmt(mean, stderr):<{val_col}}"
+        for k, w in meta_cols.items():
+            row += f"   {meta.get(k, ''):>{w}}"
+        print(row)
 
     best = min(results, key=lambda r: r[1])
     print(f"\nBest: {best[0]}  {_sci_fmt(best[1], best[2])}")
