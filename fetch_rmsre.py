@@ -37,7 +37,7 @@ from lbm_ml.model.losses import rmsre
 def _sci_fmt(mean: float, stderr: float) -> str:
     """Format as (m.mmmm ± s.ssss) × 10^exp, both values sharing one exponent."""
     exp = math.floor(math.log10(abs(mean)))
-    scale = 10.0 ** exp
+    scale = 10.0**exp
     return f"({mean / scale:.4f} ± {stderr / scale:.4f}) × 10^{exp}"
 
 
@@ -49,7 +49,7 @@ def _generate_test_data(n_samples: int = 10_000) -> tuple:
         sigma_min=1e-15,
         sigma_max=5e-4,
     )
-    fpre  = fpre  / np.sum(fpre,  axis=1)[:, np.newaxis]
+    fpre = fpre / np.sum(fpre, axis=1)[:, np.newaxis]
     fpost = fpost / np.sum(fpost, axis=1)[:, np.newaxis]
     return fpre, fpost
 
@@ -75,8 +75,10 @@ def _eval_model(model_path: Path, fpre: np.ndarray, fpost: np.ndarray) -> tuple[
         str(model_path), custom_objects={"rmsre": rmsre}
     )  # pyright: ignore[reportAssignmentType]
     fpred = model.predict(fpre, verbose=0)  # pyright: ignore[reportArgumentType]
-    per_sample: np.ndarray = rmsre(fpost, fpred).numpy()  # pyright: ignore[reportAttributeAccessIssue,reportAssignmentType]
-    mean   = float(np.mean(per_sample))
+    per_sample: np.ndarray = rmsre(
+        fpost, fpred
+    ).numpy()  # pyright: ignore[reportAttributeAccessIssue,reportAssignmentType]
+    mean = float(np.mean(per_sample))
     stderr = float(np.std(per_sample) / np.sqrt(len(per_sample)))
     return mean, stderr
 
@@ -85,6 +87,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("models", nargs="+", help="Paths to model.keras files or folders containing submodel directories")
     p.add_argument("--n-samples", type=int, default=10_000, help="Test set size (default: 10 000)")
+    p.add_argument("--sort", choices=["asc", "desc"], help="Sort results by RMSRE (asc: best first, desc: worst first)")
     args = p.parse_args()
 
     K.set_floatx("float64")
@@ -102,6 +105,9 @@ def main():
         print(f"Evaluating {title} ...")
         mean, stderr = _eval_model(model_path, fpre, fpost)
         results.append((title, mean, stderr))
+
+    if args.sort:
+        results.sort(key=lambda r: r[1], reverse=(args.sort == "desc"))
 
     val_col = max(len(_sci_fmt(m, s)) for _, m, s in results)
 
