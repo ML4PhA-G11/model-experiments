@@ -6,7 +6,7 @@
 # The data lives on Snellius only; override DATA_DIR to point elsewhere.
 set -euo pipefail
 
-model="plain_20"
+model="resnet"
 batch_size=8192
 n_epochs=4000
 patience=12800
