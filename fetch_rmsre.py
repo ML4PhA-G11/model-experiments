@@ -20,9 +20,11 @@ Mix both forms:
 
 Options:
   --n-samples INT   Number of test samples to generate (default: 10 000)
+  --save PATH       Save results to PATH.md and PATH.csv (e.g. --save summary)
 """
 
 import argparse
+import csv
 import math
 import re
 from pathlib import Path
@@ -102,11 +104,31 @@ def _eval_model(
     return mean, stderr, _extract_meta(title, model)
 
 
+def _save_md(path: Path, results: list, meta_keys: list[str], best: tuple) -> None:
+    lines = ["| Model | RMSRE (mean ± stderr) |" + "".join(f" {k} |" for k in meta_keys)]
+    lines.append("|---|---|" + "".join("---|" for _ in meta_keys))
+    for title, mean, stderr, meta in results:
+        row = f"| {title} | {_sci_fmt(mean, stderr)} |"
+        row += "".join(f" {meta.get(k, '')} |" for k in meta_keys)
+        lines.append(row)
+    lines.append(f"\n**Best:** {best[0]} — {_sci_fmt(best[1], best[2])}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _save_csv(path: Path, results: list, meta_keys: list[str]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["model", "rmsre_mean", "rmsre_stderr"] + meta_keys)
+        for title, mean, stderr, meta in results:
+            writer.writerow([title, mean, stderr] + [meta.get(k, "") for k in meta_keys])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("models", nargs="+", help="Paths to model.keras files or folders containing submodel directories")
     p.add_argument("--n-samples", type=int, default=10_000, help="Test set size (default: 10 000)")
     p.add_argument("--sort", choices=["asc", "desc"], help="Sort results by RMSRE (asc: best first, desc: worst first)")
+    p.add_argument("--save", metavar="PATH", help="Save results to PATH.md and PATH.csv")
     args = p.parse_args()
 
     K.set_floatx("float64")
@@ -152,6 +174,12 @@ def main():
 
     best = min(results, key=lambda r: r[1])
     print(f"\nBest: {best[0]}  {_sci_fmt(best[1], best[2])}")
+
+    if args.save:
+        save_path = Path(args.save)
+        _save_md(save_path.with_suffix(".md"), results, meta_keys, best)
+        _save_csv(save_path.with_suffix(".csv"), results, meta_keys)
+        print(f"Saved {save_path.with_suffix('.md')} and {save_path.with_suffix('.csv')}")
 
 
 if __name__ == "__main__":
