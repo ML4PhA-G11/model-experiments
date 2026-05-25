@@ -9,6 +9,7 @@ Select the model with --model (or by editing MODEL_NAME below):
 import argparse
 import atexit
 import datetime
+import logging
 import subprocess
 import sys
 import matplotlib
@@ -34,6 +35,17 @@ from lbm_ml.model.network import MODEL_REGISTRY
 # Runtime model selection — change this or pass --model on the CLI
 # ---------------------------------------------------------------------------
 MODEL_NAME: str = "d4equivariant"  # "d4equivariant" | "resnet"
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging(verbose: bool = True) -> None:
+    """Configure root logger; verbose=True shows INFO, False shows WARNING+."""
+    logging.basicConfig(
+        level=logging.INFO if verbose else logging.WARNING,
+        format="%(message)s",
+        force=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +90,7 @@ def _latest_run_dir(model_name: str) -> Path:
 def generate(dataset_path: Path, n_samples: int = 100_000) -> None:
     """Generate BGK collision pairs and save to dataset_path."""
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Generating {n_samples} training samples ...")
+    logger.info("Generating %d training samples ...", n_samples)
     generate_dataset(
         dataset_path,
         n_samples=n_samples,
@@ -87,7 +99,7 @@ def generate(dataset_path: Path, n_samples: int = 100_000) -> None:
         sigma_min=1e-15,
         sigma_max=5e-4,
     )
-    print(f"  Saved -> {dataset_path}")
+    logger.info("  Saved -> %s", dataset_path)
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +116,9 @@ def _start_tensorboard(log_dir: Path, port: int = 6006) -> None:
             stderr=subprocess.DEVNULL,
         )
         atexit.register(proc.terminate)
-        print(f"  TensorBoard   -> http://localhost:{port}")
+        logger.info("  TensorBoard   -> http://localhost:%d", port)
     except FileNotFoundError:
-        print(f"  TensorBoard not found; run manually: tensorboard --logdir {log_dir} --port {port}")
+        logger.warning("  TensorBoard not found; run manually: tensorboard --logdir %s --port %d", log_dir, port)
 
 
 def train(
@@ -119,6 +131,7 @@ def train(
     run_name: str | None = None,
     dataset_path: Path | None = None,
     run_dir: Path | None = None,
+    verbose: bool = True,
 ) -> keras.Model:
     """Load the dataset, train the selected network, and save artifacts under a timestamped run dir."""
     if model_name not in MODEL_REGISTRY:
@@ -132,18 +145,22 @@ def train(
     if dataset_path is None:
         dataset_path = run_dir / "example_dataset.npz"
     paths = _run_paths(run_dir)
-    print(f"Run dir: {run_dir}")
+    logger.info("Run dir: %s", run_dir)
 
     feq, fpre, fpost = load_data(dataset_path)
 
     # Normalise on density so all inputs/outputs sum to 1
+    logger.info("Normalising samples...")
     feq = feq / np.sum(feq, axis=1)[:, np.newaxis]
     fpre = fpre / np.sum(fpre, axis=1)[:, np.newaxis]
     fpost = fpost / np.sum(fpost, axis=1)[:, np.newaxis]
+    logger.info("  -> Done.")
 
+    logger.info("Splitting train/test...")
     fpre_train, fpre_test, fpost_train, fpost_test = train_test_split(fpre, fpost, test_size=0.3, shuffle=True)
+    logger.info("  -> %d train / %d test samples", len(fpre_train), len(fpre_test))
 
-    print(f"Training model: {model_name}")
+    logger.info("Training model: %s", model_name)
     if tensorboard:
         _start_tensorboard(paths["tb_log"])
     model = MODEL_REGISTRY[model_name](
@@ -163,14 +180,14 @@ def train(
         fpre_train,
         fpost_train,
         epochs=n_epochs,
-        verbose=1,
+        verbose=int(verbose),
         callbacks=callbacks,  # pyright: ignore[reportArgumentType]
         validation_data=(fpre_test, fpost_test),
         batch_size=batch_size,
     )
 
     epochs_run = len(hist.history["loss"])
-    print(f"  Trained {epochs_run}/{n_epochs} epochs (patience={patience})")
+    logger.info("  Trained %d/%d epochs (patience=%d)", epochs_run, n_epochs, patience)
 
     model.load_weights(str(paths["weights"]))
     model.save(str(paths["model"]))
@@ -182,7 +199,7 @@ def train(
     plt.legend(loc="best", frameon=False)
     plt.savefig(paths["loss_plot"], dpi=120, bbox_inches="tight")
     plt.close()
-    print(f"  Loss plot  -> {paths['loss_plot']}")
+    logger.info("  Loss plot  -> %s", paths["loss_plot"])
 
     return model
 
@@ -213,7 +230,7 @@ def simulate(
     """
     if run_dir is None:
         run_dir = _latest_run_dir(model_name)
-        print(f"Simulating from latest run: {run_dir.name}")
+        logger.info("Simulating from latest run: %s", run_dir.name)
     paths = _run_paths(run_dir)
     K.set_floatx("float64")
 
@@ -275,7 +292,7 @@ def simulate(
             collect(t, ux, uy, rho)
 
     m_final = np.sum(f2)
-    print(f"Sim ended. Mass err: {np.abs(m_initial - m_final) / m_initial:.2e}")
+    logger.info("Sim ended. Mass err: %.2e", np.abs(m_initial - m_final) / m_initial)
 
     _plot_results(dumpfile, niter, dumpit, nx, ny, tau, cs2, paths["decay_plot"], paths["fields_dir"])
 
@@ -306,7 +323,7 @@ def _plot_results(dumpfile, niter, dumpit, nx, ny, tau, cs2, decay_plot, fields_
     ax.tick_params(which="both", direction="in", top="on", right="on", labelsize=14)
     fig.savefig(decay_plot, dpi=120, bbox_inches="tight")
     plt.close(fig)
-    print(f"  Decay plot -> {decay_plot}")
+    logger.info("  Decay plot -> %s", decay_plot)
 
     # Velocity field snapshots
     X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
@@ -323,7 +340,7 @@ def _plot_results(dumpfile, niter, dumpit, nx, ny, tau, cs2, decay_plot, fields_
         field_path = fields_dir / f"velocity_field_t{int(t):05d}.png"
         fig.savefig(field_path, dpi=120, bbox_inches="tight")
         plt.close(fig)
-        print(f"  Field plot -> {field_path}")
+        logger.info("  Field plot -> %s", field_path)
 
 
 # ---------------------------------------------------------------------------
@@ -357,11 +374,13 @@ def _parse_args():
     p.add_argument(
         "--run-dir", default=None, help="Explicit run directory to simulate from (default: latest run for --model)"
     )
+    p.add_argument("--quiet", action="store_true", help="Suppress INFO logging (show WARNING+ only)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
+    setup_logging(verbose=not args.quiet)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = _make_run_dir(args.model, args.run_name, timestamp)
@@ -379,6 +398,7 @@ if __name__ == "__main__":
             tensorboard=args.tensorboard,
             dataset_path=dataset_path,
             run_dir=run_dir,
+            verbose=not args.quiet,
         )
     if not args.skip_simulate:
         sim_run_dir = Path(args.run_dir) if args.run_dir else run_dir
