@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from functools import partial
 from typing import cast
 import keras
 from keras import layers
@@ -130,6 +131,53 @@ def create_resnet_model(
 
 
 # ---------------------------------------------------------------------------
+# Plain network (no physics constraints) — Corbetta et al. 2023, "NN Naive"
+# ---------------------------------------------------------------------------
+
+
+def plain_sequential(
+    Q: int = 9,
+    depth: int = 2,
+    n_per_layer: int = 50,
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    bias: bool = False,
+) -> keras.Model:
+    """Plain feed-forward stack: `depth` Dense(n_per_layer) hidden layers + Dense(Q) output.
+
+    Unlike `sequential_model`, `depth` here is the literal hidden-layer count
+    (no off-by-one), so `depth=2` reproduces the paper's NN Naive (Table 1).
+    """
+    model = Sequential([keras.Input(shape=(Q,))])
+    for _ in range(depth):
+        model.add(Dense(n_per_layer, activation=activation, use_bias=bias, kernel_initializer="he_uniform"))
+    model.add(Dense(Q, activation=ll_activation, use_bias=bias, kernel_initializer="he_uniform"))
+    return model
+
+
+def create_plain_model(
+    loss: str | Callable = "mape",
+    optimizer: str = "adam",
+    Q: int = 9,
+    depth: int = 2,
+    n_per_layer: int = 50,
+    activation: str = "relu",
+    ll_activation: str = "linear",
+    bias: bool = False,
+) -> keras.Model:
+    """Plain network with NO physics constraints (no D4 GAVG, no conservation reconstruction).
+
+    Reproduces the "NN Naive" baseline of Corbetta et al. 2023 (Eur. Phys. J. E 46:10,
+    Table 1) when depth=2, n_per_layer=50, activation="relu", bias=False. Bias-less
+    ReLU layers are degree-1 homogeneous, so scale equivariance (P1) is the only
+    physics property satisfied; D8 symmetry (P2) and conservation (P3) are not.
+    """
+    model = plain_sequential(Q, depth, n_per_layer, activation, ll_activation, bias)
+    model.compile(loss=loss, optimizer=optimizer)
+    return model
+
+
+# ---------------------------------------------------------------------------
 # LENN: lattice-equivariant neural network (Ortali et al. 2025)
 # ---------------------------------------------------------------------------
 
@@ -252,6 +300,7 @@ def create_lenn_model(
 # Model registry — maps name → factory function
 # ---------------------------------------------------------------------------
 
+
 def create_lenn_resnet_model(
     loss: str | Callable = "mape",
     optimizer: str = "adam",
@@ -313,6 +362,9 @@ def create_lenn_resnet_model(
 MODEL_REGISTRY: dict[str, Callable] = {
     "d4equivariant": create_model,
     "resnet": create_resnet_model,
+    "plain_2": partial(create_plain_model, depth=2),
+    "plain_10": partial(create_plain_model, depth=10),
+    "plain_20": partial(create_plain_model, depth=20),
     "lenn": create_lenn_model,
     "lenn_resnet": create_lenn_resnet_model,
 }
