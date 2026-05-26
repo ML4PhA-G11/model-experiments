@@ -7,10 +7,8 @@ Select the model with --model (or by editing MODEL_NAME below):
 """
 
 import argparse
-import atexit
 import datetime
 import logging
-import subprocess
 import sys
 import matplotlib
 from tqdm import tqdm
@@ -23,14 +21,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from keras import backend as K
 import keras
-from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
-from sklearn.model_selection import train_test_split
 
-from lbm_ml.data.generation import generate_dataset, load_data
-from lbm_ml.data.simulation import load_simulation_pairs
+from lbm_ml.data.generation import generate_dataset
 from lbm_ml.lattice.stencil import LB_stencil
 from lbm_ml.model.losses import rmsre
 from lbm_ml.model.network import MODEL_REGISTRY
+from lbm_ml.training import fit_model, load_training_data
 
 # ---------------------------------------------------------------------------
 # Runtime model selection — change this or pass --model on the CLI
@@ -108,20 +104,6 @@ def generate(dataset_path: Path, n_samples: int = 100_000) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _start_tensorboard(log_dir: Path, port: int = 6006) -> None:
-    tb = Path(sys.executable).parent / "tensorboard"
-    try:
-        proc = subprocess.Popen(
-            [str(tb), "--logdir", str(log_dir), "--port", str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        atexit.register(proc.terminate)
-        logger.info("  TensorBoard   -> http://localhost:%d", port)
-    except FileNotFoundError:
-        logger.warning("  TensorBoard not found; run manually: tensorboard --logdir %s --port %d", log_dir, port)
-
-
 def train(
     model_name: str = MODEL_NAME,
     batch_size: int = 32,
@@ -160,71 +142,31 @@ def train(
     paths = _run_paths(run_dir)
     logger.info("Run dir: %s", run_dir)
 
-    if data_dir is not None:
-        logger.info("Loading training data from simulator output in %s ...", data_dir)
-        feq, fpre, fpost = load_simulation_pairs(
-            data_dir,
-            samples_per_step=samples_per_step,
-            step_stride=step_stride,
-            max_steps=max_steps,
-        )
-        logger.info("Loaded %d samples from simulator output in %s", feq.shape[0], data_dir)
-    else:
-        feq, fpre, fpost = load_data(dataset_path)
-
-    # Normalise on density so all inputs/outputs sum to 1
-    logger.info("Normalising samples...")
-    feq = feq / np.sum(feq, axis=1)[:, np.newaxis]
-    fpre = fpre / np.sum(fpre, axis=1)[:, np.newaxis]
-    fpost = fpost / np.sum(fpost, axis=1)[:, np.newaxis]
-    logger.info("  -> Done.")
-
-    logger.info("Splitting train/test...")
-    fpre_train, fpre_test, fpost_train, fpost_test = train_test_split(fpre, fpost, test_size=0.3, shuffle=True)
-    logger.info("  -> %d train / %d test samples", len(fpre_train), len(fpre_test))
+    fpre_train, fpre_test, fpost_train, fpost_test = load_training_data(
+        data_dir=data_dir,
+        dataset_path=dataset_path,
+        samples_per_step=samples_per_step,
+        step_stride=step_stride,
+        max_steps=max_steps,
+    )
 
     logger.info("Training model: %s", model_name)
-    if tensorboard:
-        _start_tensorboard(paths["tb_log"])
     model = MODEL_REGISTRY[model_name](
         loss=rmsre,
         optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
         ll_activation="softmax",
     )
 
-    callbacks = [
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=patience // 3, min_lr=1e-7, verbose=1),
-        EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, verbose=1),
-        ModelCheckpoint(filepath=str(paths["weights"]), monitor="val_loss", save_best_only=True),
-        TensorBoard(log_dir=str(paths["tb_log"]), histogram_freq=1),
-    ]
-
-    hist = model.fit(
-        fpre_train,
-        fpost_train,
-        epochs=n_epochs,
-        verbose=int(verbose),
-        callbacks=callbacks,  # pyright: ignore[reportArgumentType]
-        validation_data=(fpre_test, fpost_test),
+    return fit_model(
+        model,
+        fpre_train, fpost_train, fpre_test, fpost_test,
+        paths=paths,
+        n_epochs=n_epochs,
+        patience=patience,
         batch_size=batch_size,
+        tensorboard=tensorboard,
+        verbose=verbose,
     )
-
-    epochs_run = len(hist.history["loss"])
-    logger.info("  Trained %d/%d epochs (patience=%d)", epochs_run, n_epochs, patience)
-
-    model.load_weights(str(paths["weights"]))
-    model.save(str(paths["model"]))
-    model.evaluate(fpre_test, fpost_test)
-
-    plt.figure()
-    plt.semilogy(hist.history["loss"], lw=3, label="Training")
-    plt.semilogy(hist.history["val_loss"], lw=3, label="Validation")
-    plt.legend(loc="best", frameon=False)
-    plt.savefig(paths["loss_plot"], dpi=120, bbox_inches="tight")
-    plt.close()
-    logger.info("  Loss plot  -> %s", paths["loss_plot"])
-
-    return model
 
 
 # ---------------------------------------------------------------------------
