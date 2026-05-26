@@ -13,7 +13,9 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+from typing import Callable, cast
 
+from keras import Model, models
 import numpy as np
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts-run-all-tensorflow"
@@ -46,7 +48,7 @@ def mirror_np(f: np.ndarray) -> np.ndarray:
 
 # 8 D4 elements as (name, forward_transform) pairs — forward is applied to both
 # the input and the reference output to form the equivariance residual.
-D4_ELEMENTS: list[tuple[str, "function"]] = [
+D4_ELEMENTS: list[tuple[str, Callable]] = [
     ("identity", lambda f: f),
     ("R90", lambda f: rot90_np(f, 1)),
     ("R180", lambda f: rot90_np(f, 2)),
@@ -70,14 +72,13 @@ def _latest_run_dir(model_name: str) -> Path:
     return matches[-1]
 
 
-def _load_model(run_dir: Path):
-    import keras
+def _load_model(run_dir: Path) -> Model:
     from lbm_ml.model.losses import rmsre
 
     model_path = run_dir / "model.keras"
     if not model_path.exists():
         raise FileNotFoundError(f"model.keras not found in {run_dir}")
-    return keras.models.load_model(str(model_path), custom_objects={"rmsre": rmsre})
+    return cast(Model, models.load_model(str(model_path), custom_objects={"rmsre": rmsre}))
 
 
 def _get_samples(dataset_path: Path | None, n: int) -> np.ndarray:
@@ -136,7 +137,7 @@ def run_checks(
     n = fpre.shape[0]
     print(f"Samples  : {n}\n")
 
-    fpost = np.array(model.predict(fpre, verbose=0, batch_size=batch_size), dtype=np.float64)
+    fpost = np.array(model.predict(fpre, verbose=cast(str, 0), batch_size=batch_size), dtype=np.float64)
 
     all_passed = True
 
@@ -155,7 +156,7 @@ def run_checks(
     # Equivariance condition: model(g(f)) == g(model(f)).
     # identity is trivially exact; real signal is in the remaining 7 elements.
     for name, g in D4_ELEMENTS:
-        pred_gf = np.array(model.predict(g(fpre), verbose=0, batch_size=batch_size), dtype=np.float64)
+        pred_gf = np.array(model.predict(g(fpre), verbose=cast(str, 0), batch_size=batch_size), dtype=np.float64)
         residual = np.abs(pred_gf - g(fpost)).max(axis=1)
         all_passed &= _row(name, residual, tol_symmetry)
 
