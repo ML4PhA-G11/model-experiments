@@ -85,6 +85,8 @@ def fit_model(
     batch_size: int = 32,
     tensorboard: bool = False,
     verbose: bool = True,
+    initial_epoch: int = 0,
+    tb_log_dir: Path | None = None,
 ) -> keras.Model:
     """Run the Keras training loop and save weights, model, and loss plot.
 
@@ -95,28 +97,37 @@ def fit_model(
     paths
         Artifact path dict with keys: 'weights', 'model', 'loss_plot', 'tb_log'.
     n_epochs
-        Maximum number of epochs.
+        Maximum number of epochs (absolute, not additional — consistent with Keras).
     patience
         EarlyStopping patience (epochs without val_loss improvement).
+    initial_epoch
+        Epoch to start counting from. Pass the number of epochs already trained
+        so TensorBoard shows a continuous x-axis across runs.
+    tb_log_dir
+        Override for the TensorBoard log directory. Defaults to paths['tb_log'].
+        Pass the previous run's log dir to append events to the same chart.
 
     Returns
     -------
     Trained model with best weights restored.
     """
+    tb_log = tb_log_dir if tb_log_dir is not None else paths["tb_log"]
+
     if tensorboard:
-        _start_tensorboard(paths["tb_log"])
+        _start_tensorboard(tb_log)
 
     callbacks = [
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=patience // 3, min_lr=1e-7, verbose=1),
         EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, verbose=1),
         ModelCheckpoint(filepath=str(paths["weights"]), monitor="val_loss", save_best_only=True),
-        TensorBoard(log_dir=str(paths["tb_log"]), histogram_freq=1),
+        TensorBoard(log_dir=str(tb_log), histogram_freq=1),
     ]
 
     hist = model.fit(
         fpre_train,
         fpost_train,
-        epochs=n_epochs,
+        initial_epoch=initial_epoch,
+        epochs=initial_epoch + n_epochs,
         verbose=cast(str, verbose),
         callbacks=callbacks,  # pyright: ignore[reportArgumentType]
         validation_data=(fpre_test, fpost_test),
