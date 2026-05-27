@@ -13,11 +13,17 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+
+# Ensure the project root is on sys.path so eval_helpers is importable as a
+# package whether this file is run as a script or imported as a module.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from typing import Callable, cast
 from keras import Model, models, backend as K
 import numpy as np
 from lbm_ml.data.generation import generate_samples
 from lbm_ml.model.losses import rmsre
+from eval_helpers.equivariance_inspect import inspect_lenn_equivariance
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts-run-all-tensorflow"
 
@@ -173,8 +179,8 @@ def _parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "--model",
-        default="d4equivariant",
-        help="Model name used to locate the latest run directory (default: d4equivariant)",
+        default="lenn",
+        help="Model name used to locate the latest run directory (default: lenn)",
     )
     p.add_argument("--run-dir", default=None, help="Explicit run directory containing model.keras (overrides --model)")
     p.add_argument("--dataset", default=None, help=".npz dataset file; omit to generate fresh samples")
@@ -192,18 +198,30 @@ def _parse_args():
         help="Absolute tolerance for D4 equivariance checks (default: 1e-15)",
     )
     p.add_argument("--batch-size", type=int, default=512, help="Prediction batch size (default: 512)")
+    p.add_argument("--inspect", action="store_true", help="Run stage-by-stage equivariance inspection after checks")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
+    run_dir = Path(args.run_dir) if args.run_dir else None
     ok = run_checks(
         model_name=args.model,
-        run_dir=Path(args.run_dir) if args.run_dir else None,
+        run_dir=run_dir,
         dataset_path=Path(args.dataset) if args.dataset else None,
         n_samples=args.n_samples,
         tol_conservation=args.tol_conservation,
         tol_symmetry=args.tol_symmetry,
         batch_size=args.batch_size,
     )
+
+    if args.inspect:
+
+        if run_dir is None:
+            run_dir = _latest_run_dir(args.model)
+        model = _load_model(run_dir)
+        fpre = _get_samples(Path(args.dataset) if args.dataset else None, args.n_samples)
+        print("\n")
+        inspect_lenn_equivariance(model, fpre, batch_size=args.batch_size)
+
     sys.exit(0 if ok else 1)

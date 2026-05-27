@@ -5,6 +5,7 @@ import keras
 from keras import layers
 from keras.models import Sequential
 from keras.layers import Dense
+import numpy as np
 
 from lbm_ml.lattice.symmetry import (
     D4Symmetry,
@@ -13,7 +14,6 @@ from lbm_ml.lattice.symmetry import (
     compute_d2q9_orbit_indices,
     compute_d2q9_bias_orbit_indices,
 )
-from lbm_ml.model.losses import rmsre
 
 # ---------------------------------------------------------------------------
 # Inner sub-networks
@@ -232,6 +232,18 @@ class LENNLayer(keras.layers.Layer):
             )
 
         super().build(input_shape)
+
+    def display_weights(self) -> None:
+        """Print the full A and bias matrices for inspection."""
+
+        np.set_printoptions(precision=4, suppress=True, linewidth=100)
+        A_full = self.A_tilde.numpy()[self._orbit_idx]  # (9, 9, C_in, C_out)
+        for ci in range(A_full.shape[2]):
+            for co in range(A_full.shape[3]):
+                print(f"A_full [C_in={ci}, C_out={co}]:\n{A_full[:, :, ci, co]}\n")
+        if self.use_bias:
+            b_full = self.b_tilde.numpy()[self._bias_idx]  # (9, C_out)
+            print(f"b_full (9 × C_out):\n{b_full}\n")
 
     def call(self, x):
         # Reconstruct full (9, 9, C_in, C_out) weight tensor via orbit indexing
