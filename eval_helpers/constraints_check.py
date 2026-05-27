@@ -14,11 +14,12 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Callable, cast
-
-from keras import Model, models
+from keras import Model, models, backend as K
 import numpy as np
+from lbm_ml.data.generation import generate_samples
+from lbm_ml.model.losses import rmsre
 
-ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts-run-all-tensorflow"
+ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts-run-all-tensorflow"
 
 # D2Q9 velocity vectors — must match lbm_ml/lattice/stencil.py
 C = np.array(
@@ -73,7 +74,6 @@ def _latest_run_dir(model_name: str) -> Path:
 
 
 def _load_model(run_dir: Path) -> Model:
-    from lbm_ml.model.losses import rmsre
 
     model_path = run_dir / "model.keras"
     if not model_path.exists():
@@ -87,8 +87,6 @@ def _get_samples(dataset_path: Path | None, n: int) -> np.ndarray:
         data = np.load(dataset_path, allow_pickle=True)
         fpre = data["f_pre"][:n].astype(np.float64)
     else:
-        from lbm_ml.data.generation import generate_samples
-
         print(f"Generating {n} test samples …")
         _feq, fpre, _fpost = generate_samples(n)
         fpre = fpre.astype(np.float64)
@@ -120,10 +118,9 @@ def run_checks(
     dataset_path: Path | None = None,
     n_samples: int = 1000,
     tol_conservation: float = 1e-9,
-    tol_symmetry: float = 1e-5,
+    tol_symmetry: float = 1e-15,
     batch_size: int = 512,
 ) -> bool:
-    from keras import backend as K
 
     K.set_floatx("float64")
 
@@ -185,11 +182,14 @@ def _parse_args():
     p.add_argument(
         "--tol-conservation",
         type=float,
-        default=1e-9,
-        help="Absolute tolerance for mass / momentum checks (default: 1e-9)",
+        default=1e-15,
+        help="Absolute tolerance for mass / momentum checks (default: 1e-15)",
     )
     p.add_argument(
-        "--tol-symmetry", type=float, default=1e-5, help="Absolute tolerance for D4 equivariance checks (default: 1e-5)"
+        "--tol-symmetry",
+        type=float,
+        default=1e-15,
+        help="Absolute tolerance for D4 equivariance checks (default: 1e-15)",
     )
     p.add_argument("--batch-size", type=int, default=512, help="Prediction batch size (default: 512)")
     return p.parse_args()
