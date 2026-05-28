@@ -8,11 +8,15 @@ dependencies = [
     "numba>=0.65.1",
     "numpy>=2.2.6",
     "scikit-learn>=1.7.2",
+    "keras>=3.12.2",
     # Running scripts/snellius-py-runtime-setup.sh adds tensorflow[and-cuda] here, please do not commit this change to keep the repo runtime agnostic
     "tensorflow>=2.21.0",
     "setuptools>=70.0,<80.0",
     "tensorboard>=2.20.0",
     "tqdm>=4.67.3",
+    "jax==0.4.34",
+    "jaxlib==0.4.34",
+    "jax-metal>=0.1.1",
 ]
 
 [dependency-groups]

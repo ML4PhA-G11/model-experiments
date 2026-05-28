@@ -9,6 +9,7 @@ Select the model with --model (or by editing MODEL_NAME below):
 import argparse
 import datetime
 import logging
+import os
 import sys
 import matplotlib
 from tqdm import tqdm
@@ -19,6 +20,15 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Early backend selection — must run before any keras/lbm_ml import
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--backend", default=os.environ.get("KERAS_BACKEND", "tensorflow"))
+_pre_args, _ = _pre.parse_known_args()
+os.environ["KERAS_BACKEND"] = _pre_args.backend
+if _pre_args.backend == "jax":
+    os.environ["JAX_ENABLE_X64"] = "1"
+
 from keras import backend as K
 import keras
 
@@ -369,6 +379,12 @@ def _parse_args():
         type=int,
         default=2190,
         help="Fuse N batches per tf.function call to reduce Python dispatch overhead (default: 2190). Total steps should be divisible by this to avoid truncation of the last incomplete batch.",
+    )
+    p.add_argument(
+        "--backend",
+        default=os.environ.get("KERAS_BACKEND", "tensorflow"),
+        choices=["tensorflow", "jax", "torch"],
+        help="Keras backend (default: tensorflow, or $KERAS_BACKEND)",
     )
     return p.parse_args()
 
