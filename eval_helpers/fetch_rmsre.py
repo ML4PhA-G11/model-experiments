@@ -35,6 +35,7 @@ import keras
 
 from lbm_ml.data.generation import generate_samples
 from lbm_ml.model.losses import rmsre
+from lbm_ml.training import load_training_data
 
 
 def _sci_fmt(mean: float, stderr: float) -> str:
@@ -43,18 +44,6 @@ def _sci_fmt(mean: float, stderr: float) -> str:
     scale = 10.0**exp
     return f"({mean / scale:.4f} ± {stderr / scale:.4f}) × 10^{exp}"
 
-
-def _generate_test_data(n_samples: int = 10_000) -> tuple:
-    _, fpre, fpost = generate_samples(
-        n_samples=n_samples,
-        u_abs_min=1e-15,
-        u_abs_max=0.01,
-        sigma_min=1e-15,
-        sigma_max=5e-4,
-    )
-    fpre = fpre / np.sum(fpre, axis=1)[:, np.newaxis]
-    fpost = fpost / np.sum(fpost, axis=1)[:, np.newaxis]
-    return fpre, fpost
 
 
 def _resolve_models(inputs: list[str]) -> list[tuple[str, Path]]:
@@ -117,7 +106,8 @@ def _build_df(results: list[tuple[str, float, float, dict[str, str]]]) -> pd.Dat
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("models", nargs="+", help="Paths to model.keras files or folders containing submodel directories")
-    p.add_argument("--n-samples", type=int, default=10_000, help="Test set size (default: 10 000)")
+    p.add_argument("--data", metavar="PATH", help=".npz dataset or simulation directory (skips generation)")
+    p.add_argument("--n-samples", type=int, default=10_000, help="Number of samples to evaluate on (default: 10 000)")
     p.add_argument("--sort", choices=["asc", "desc"], help="Sort results by RMSRE (asc: best first, desc: worst first)")
     p.add_argument("--save", metavar="PATH", help="Save results to PATH.md and PATH.csv")
     args = p.parse_args()
@@ -129,8 +119,29 @@ def main():
         print("No models found.")
         return
 
-    print(f"Generating {args.n_samples} test samples ...")
-    fpre, fpost = _generate_test_data(args.n_samples)
+    if args.data:
+        data_path = Path(args.data)
+        print(f"Loading test data from {data_path} ...")
+        fpre_train, fpre_test, fpost_train, fpost_test = load_training_data(
+            data_dir=data_path if data_path.is_dir() else None,
+            dataset_path=data_path if data_path.is_file() else None,
+        )
+        fpre = np.concatenate([fpre_train, fpre_test])
+        fpost = np.concatenate([fpost_train, fpost_test])
+        if args.n_samples < len(fpre):
+            idx = np.random.choice(len(fpre), args.n_samples, replace=False)
+            fpre, fpost = fpre[idx], fpost[idx]
+    else:
+        print(f"Generating {args.n_samples} test samples ...")
+        _, fpre, fpost = generate_samples(
+            n_samples=args.n_samples,
+            u_abs_min=1e-15,
+            u_abs_max=0.01,
+            sigma_min=1e-15,
+            sigma_max=5e-4,
+        )
+        fpre = fpre / np.sum(fpre, axis=1)[:, np.newaxis]
+        fpost = fpost / np.sum(fpost, axis=1)[:, np.newaxis]
 
     results: list[tuple[str, float, float, dict[str, str]]] = []
     for title, model_path in entries:
