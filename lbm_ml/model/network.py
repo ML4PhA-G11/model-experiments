@@ -72,7 +72,15 @@ def resnet_sequential_model(
 
 
 def _wrap_d4(
-    sub_model_fn, loss, optimizer, Q, n_hidden_layers, n_per_layer, activation, ll_activation, bias,
+    sub_model_fn,
+    loss,
+    optimizer,
+    Q,
+    n_hidden_layers,
+    n_per_layer,
+    activation,
+    ll_activation,
+    bias,
     steps_per_execution: int = 1,
 ) -> keras.Model:
     """Wrap any inner sub-network factory in the D4-equivariant lift/pool pattern."""
@@ -110,7 +118,18 @@ def create_model(
       3. Enforce conservation laws (AlgReconstruction) on each branch output.
       4. Undo each transform (D4AntiSymmetry) then average.
     """
-    return _wrap_d4(sequential_model, loss, optimizer, Q, n_hidden_layers, n_per_layer, activation, ll_activation, bias, steps_per_execution)
+    return _wrap_d4(
+        sequential_model,
+        loss,
+        optimizer,
+        Q,
+        n_hidden_layers,
+        n_per_layer,
+        activation,
+        ll_activation,
+        bias,
+        steps_per_execution,
+    )
 
 
 def create_resnet_model(
@@ -130,7 +149,15 @@ def create_resnet_model(
     skip connections (ResNet-style) instead of a plain sequential stack.
     """
     return _wrap_d4(
-        resnet_sequential_model, loss, optimizer, Q, n_hidden_layers, n_per_layer, activation, ll_activation, bias,
+        resnet_sequential_model,
+        loss,
+        optimizer,
+        Q,
+        n_hidden_layers,
+        n_per_layer,
+        activation,
+        ll_activation,
+        bias,
         steps_per_execution,
     )
 
@@ -379,12 +406,15 @@ def create_lenn_resnet_model(
     return model
 
 
-MODEL_REGISTRY: dict[str, Callable] = {
+MODEL_REGISTRY: dict[str, Callable[..., keras.Model]] = {
     "d4equivariant": create_model,
+    "d4equivariant_10K_wide": partial(create_model, n_per_layer=69),
     "resnet": create_resnet_model,
     "plain_2": partial(create_plain_model, depth=2),
     "plain_10": partial(create_plain_model, depth=10),
     "plain_20": partial(create_plain_model, depth=20),
-    "lenn": create_lenn_model,
-    "lenn_resnet": create_lenn_resnet_model,
+    "lenn": partial(create_lenn_model, channels=(1, 8, 8, 10), use_bias=True),
+    "lenn_18_18_18": partial(create_lenn_model, channels=(18, 18, 18), use_bias=True),
+    "lenn_resnet": partial(create_lenn_resnet_model, channels=(8, 8, 8), use_bias=True),
+    "lenn_resnet_11_11_11": partial(create_lenn_resnet_model, channels=(11, 11, 11), use_bias=True),
 }
