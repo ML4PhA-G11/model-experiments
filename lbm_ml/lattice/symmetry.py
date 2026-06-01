@@ -289,4 +289,43 @@ class SymmetricAlgReconstruction(keras.layers.Layer):
         # C⁺[i] = [1/9, cx[i]/6, cy[i]/6]  from (C Cᵀ)⁻¹ = diag(1/9, 1/6, 1/6)
         df_corrected = df - d_mass / 9 - d_px * cx / 6 - d_py * cy / 6
 
+        return self._apply(fpre, df_corrected)
+
+    def _apply(self, fpre, df_corrected):
         return fpre + df_corrected
+
+
+@keras.saving.register_keras_serializable(package="lbm")
+class PositivitySafeAlgReconstruction(SymmetricAlgReconstruction):
+    """Conservation projection with a positivity-safe scaling fallback.
+
+    Identical to SymmetricAlgReconstruction except the correction is scaled
+    by the largest α ∈ [0, 1] that keeps all f_i ≥ epsilon.  When the full
+    correction is already safe, α = 1 and the result is identical.
+
+    Parameters
+    ----------
+    epsilon : float
+        Minimum allowed population value (default 0.0).
+    """
+
+    def __init__(self, epsilon: float = 0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.epsilon = epsilon
+
+    def _apply(self, fpre, df_corrected):
+        eps = keras.ops.cast(self.epsilon, df_corrected.dtype)
+        # α_i = (fpre[i] - ε) / (-df_corrected[i]) for directions where correction < 0
+        safe_denom = keras.ops.where(df_corrected < 0, -df_corrected, keras.ops.ones_like(df_corrected))
+        alpha_i = keras.ops.where(
+            df_corrected < 0,
+            (fpre - eps) / safe_denom,
+            keras.ops.ones_like(df_corrected),
+        )
+        alpha = keras.ops.clip(keras.ops.min(alpha_i, axis=-1, keepdims=True), 0.0, 1.0)
+        return fpre + alpha * df_corrected
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"epsilon": self.epsilon})
+        return config
