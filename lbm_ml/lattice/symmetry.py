@@ -289,4 +289,101 @@ class SymmetricAlgReconstruction(keras.layers.Layer):
         # C⁺[i] = [1/9, cx[i]/6, cy[i]/6]  from (C Cᵀ)⁻¹ = diag(1/9, 1/6, 1/6)
         df_corrected = df - d_mass / 9 - d_px * cx / 6 - d_py * cy / 6
 
+        return self._apply(fpre, df_corrected)
+
+    def _apply(self, fpre, df_corrected):
         return fpre + df_corrected
+
+
+@keras.saving.register_keras_serializable(package="lbm")
+class PositivitySafeAlgReconstruction(SymmetricAlgReconstruction):
+    """Conservation projection with a positivity-safe scaling fallback.
+
+    Identical to SymmetricAlgReconstruction except the correction is scaled
+    by the largest α ∈ [0, 1] that keeps all f_i ≥ epsilon.  When the full
+    correction is already safe, α = 1 and the result is identical.
+
+    Parameters
+    ----------
+    epsilon : float
+        Minimum allowed population value (default 0.0).
+    """
+
+    def __init__(self, epsilon: float = 0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.epsilon = epsilon
+
+    def _apply(self, fpre, df_corrected):
+        eps = keras.ops.cast(self.epsilon, df_corrected.dtype)
+        # α_i = (fpre[i] - ε) / (-df_corrected[i]) for directions where correction < 0
+        safe_denom = keras.ops.where(df_corrected < 0, -df_corrected, keras.ops.ones_like(df_corrected))
+        alpha_i = keras.ops.where(
+            df_corrected < 0,
+            (fpre - eps) / safe_denom,
+            keras.ops.ones_like(df_corrected),
+        )
+        alpha = keras.ops.clip(keras.ops.min(alpha_i, axis=-1, keepdims=True), 0.0, 1.0)
+        return fpre + alpha * df_corrected
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"epsilon": self.epsilon})
+        return config
+
+
+@keras.saving.register_keras_serializable(package="lbm")
+class MultiplicativeAlgReconstruction(PositivitySafeAlgReconstruction):
+    """Momentum-conserving correction via multiplicative scaling of the NN output.
+
+    Unlike SymmetricAlgReconstruction (additive correction anchored to fpre),
+    this layer starts from fpred (assumed positive, e.g. softmax output) and
+    applies a multiplicative weight:
+
+        f_post[i] = fpred[i] · (1 + α·(λ₁·cx[i] + λ₂·cy[i]))
+
+    λ₁, λ₂ are solved from a 2×2 linear system that enforces momentum
+    conservation (mass is already conserved via the normalize/denormalize trick
+    with softmax).  α ∈ [0,1] is then scaled to keep (1 + α·δ[i]) ≥ epsilon.
+
+    Because positivity depends only on fpred (not fpre), it is guaranteed even
+    when fpre itself contains negatives from upstream simulation drift — the key
+    advantage over PositivitySafeAlgReconstruction.
+
+    Inherits _CX, _CY, epsilon, and get_config from PositivitySafeAlgReconstruction.
+    """
+
+    def call(self, fpre, fpred):
+        cx = keras.ops.cast(self._CX, fpred.dtype)
+        cy = keras.ops.cast(self._CY, fpred.dtype)
+        eps = keras.ops.cast(self.epsilon, fpred.dtype)
+
+        # Momentum defects: how much fpred differs from fpre
+        d_px = keras.ops.sum((fpre - fpred) * cx, axis=-1, keepdims=True)  # (batch, 1)
+        d_py = keras.ops.sum((fpre - fpred) * cy, axis=-1, keepdims=True)  # (batch, 1)
+
+        # 2×2 system A·[λ₁, λ₂]ᵀ = [d_px, d_py]ᵀ,  A[i,j] = Σ_k fpred[k]·c_i[k]·c_j[k]
+        A00 = keras.ops.sum(fpred * cx * cx, axis=-1, keepdims=True)
+        A01 = keras.ops.sum(fpred * cx * cy, axis=-1, keepdims=True)
+        A11 = keras.ops.sum(fpred * cy * cy, axis=-1, keepdims=True)
+
+        # Analytic 2×2 inverse; guard against near-singular (e.g. uniform flow)
+        det = A00 * A11 - A01 * A01
+        det_safe = keras.ops.where(keras.ops.abs(det) > 1e-12, det, keras.ops.ones_like(det))
+        lam1 = (A11 * d_px - A01 * d_py) / det_safe
+        lam2 = (A00 * d_py - A01 * d_px) / det_safe
+        singular = keras.ops.abs(det) <= 1e-12
+        lam1 = keras.ops.where(singular, keras.ops.zeros_like(lam1), lam1)
+        lam2 = keras.ops.where(singular, keras.ops.zeros_like(lam2), lam2)
+
+        delta = lam1 * cx + lam2 * cy  # (batch, 9)
+
+        # Largest α ∈ [0,1] such that (1 + α·δ[i]) ≥ epsilon for all i
+        safe_denom = keras.ops.where(delta < 0, -delta, keras.ops.ones_like(delta))
+        alpha_i = keras.ops.where(
+            delta < 0,
+            (1.0 - eps) / safe_denom,
+            keras.ops.ones_like(delta),
+        )
+        alpha = keras.ops.clip(keras.ops.min(alpha_i, axis=-1, keepdims=True), 0.0, 1.0)
+
+        return fpred * (1.0 + alpha * delta)
